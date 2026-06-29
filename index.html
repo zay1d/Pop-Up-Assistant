@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pop-Up · Управление размещениями</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <!-- Шапка -->
+  <header class="topbar" id="topbar">
+    <button class="brand" id="brandBtn" title="На главный экран">
+      <span class="brand-logo">◐</span>
+      <span class="brand-name">Pop-Up</span>
+    </button>
+    <nav class="topnav" id="topnav"></nav>
+    <div class="topbar-right">
+      <button class="icon-btn" id="backupBtn" title="Сохранение / Перенос данных">⤓ Бэкап</button>
+    </div>
+  </header>
+
+  <!-- Контент -->
+  <main id="view"></main>
+</div>
+
+<!-- Модальное окно -->
+<div class="modal-overlay" id="modalOverlay" hidden>
+  <div class="modal" id="modal" role="dialog" aria-modal="true"></div>
+</div>
+
+<!-- Всплывающее уведомление -->
+<div class="toast" id="toast" hidden></div>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+# ── Секреты бэкенда (НИКОГДА не коммитить) ──
+server/.env
+server/.env.*
+!server/.env.example
+
+# ── Node ──
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# ── Прочее ──
+.DS_Store
+*.log
+backups/
+.claude/settings.local.json
