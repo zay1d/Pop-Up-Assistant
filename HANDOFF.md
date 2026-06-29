@@ -13,7 +13,7 @@
 | Сервер (SSH) | `ssh -p 54323 admintg@90.156.197.14` (Ubuntu 22.04) |
 | App-каталог на сервере | `/opt/pop-up-assistant/` (репо), сервис `systemd: popup` |
 | База | PostgreSQL `popup` (роль `popup`), пароль в `server/.env` (chmod 600) |
-| Документы (R2) | bucket `popup-documents` — ⚠ R2-ключи в `.env` ещё пустые, документы выключены до их заполнения |
+| Документы (R2) | bucket `pop-up-assistant` — настроен (ключи в `.env`, CORS на origin Pages); presign/upload/download/delete проверены вживую |
 
 > Сервер общий с проектом TCM: Pop-Up добавлен аддитивно — отдельный порт
 > (8090), отдельный Funnel (8443), отдельная БД. 443-й Funnel и tcm-events не
@@ -54,15 +54,17 @@
 
 ## Что осталось сделать
 
-- [ ] **Cloudflare R2** (для документов): создать bucket `popup-documents`,
-      API-токен, CORS на `https://zay1d.github.io` (PUT+GET). Затем вписать
-      `R2_*` в `/opt/pop-up-assistant/server/.env` на сервере и
-      `sudo systemctl restart popup`. До этого сохранение датасета БЕЗ
-      вложений работает; с вложениями (фото/файлы) — упадёт на выгрузке в R2.
-- [ ] End-to-end проверка на живом сайте: сохранить датасет, перезагрузить,
-      (после R2) проверить загрузку/скачивание документов.
+- ✅ **Cloudflare R2** настроен: bucket `pop-up-assistant`, ключи в `.env`,
+      CORS на `https://zay1d.github.io` (PUT+GET). Полный цикл presign → upload
+      → download → delete проверен через публичный API.
+- [ ] Финальная проверка **в реальном браузере**: открыть сайт, сохранить
+      датасет с фото/файлом, перезагрузить, убедиться, что всё подтянулось.
 
 Полные шаги — в `deploy/README.md`.
+
+> Примечание: R2-токен создан с правами **Object Read & Write** — их хватает
+> для работы приложения, но НЕ для смены настроек бакета (CORS ставится в
+> панели Cloudflare либо токеном Admin Read & Write).
 
 ## Конфигурация, которая живёт ВНЕ репозитория (на сервере, `server/.env`)
 
