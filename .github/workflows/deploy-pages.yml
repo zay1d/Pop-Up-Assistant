@@ -1,0 +1,51 @@
+name: Deploy frontend to GitHub Pages
+
+# Publishes the whole frontend (index.html, app.js, data.js, cloud.js,
+# styles.css, plans/) to GitHub Pages. Backend (server/), deploy notes and
+# source documents are excluded. Runs on push to the deploy branch and can be
+# triggered manually (Actions → Run workflow).
+on:
+  push:
+    branches: [claude/popup-web-service-jmqb6v]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; newer runs cancel older queued ones.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage frontend (whole site, minus backend/source-only files)
+        run: |
+          mkdir -p _site
+          rsync -a ./ _site/ \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude 'server' \
+            --exclude 'deploy' \
+            --exclude 'docs' \
+            --exclude 'node_modules' \
+            --exclude '_site'
+          touch _site/.nojekyll
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

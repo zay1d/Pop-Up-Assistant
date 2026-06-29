@@ -1,0 +1,16 @@
+[Unit]
+Description=Pop-Up API
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+# Adjust user and path to where you cloned the repo on the server.
+User=popup
+WorkingDirectory=/opt/pop-up-assistant/server
+EnvironmentFile=/opt/pop-up-assistant/server/.env
+ExecStart=/usr/bin/node src/index.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
