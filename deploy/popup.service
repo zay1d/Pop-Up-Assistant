@@ -4,8 +4,8 @@ After=network.target postgresql.service
 
 [Service]
 Type=simple
-# Adjust user and path to where you cloned the repo on the server.
-User=popup
+# User/path as deployed on the corporate VM. Adjust if you clone elsewhere.
+User=admintg
 WorkingDirectory=/opt/pop-up-assistant/server
 EnvironmentFile=/opt/pop-up-assistant/server/.env
 ExecStart=/usr/bin/node src/index.js

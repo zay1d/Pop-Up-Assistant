@@ -3,6 +3,22 @@
 Операционный хэндофф проекта Pop-Up. Сначала прочитайте `CLAUDE.md`
 (архитектура), здесь — живой статус и «как это эксплуатировать».
 
+## Живые адреса
+
+| Часть | URL / расположение |
+|---|---|
+| Фронт (GitHub Pages) | https://zay1d.github.io/Pop-Up-Assistant/ |
+| API (Tailscale Funnel) | https://tcm-events.tail226d37.ts.net:8443 (Funnel → 127.0.0.1:8090) |
+| Health check | `GET /api/health` → `{"ok":true}` |
+| Сервер (SSH) | `ssh -p 54323 admintg@90.156.197.14` (Ubuntu 22.04) |
+| App-каталог на сервере | `/opt/pop-up-assistant/` (репо), сервис `systemd: popup` |
+| База | PostgreSQL `popup` (роль `popup`), пароль в `server/.env` (chmod 600) |
+| Документы (R2) | bucket `popup-documents` — ⚠ R2-ключи в `.env` ещё пустые, документы выключены до их заполнения |
+
+> Сервер общий с проектом TCM: Pop-Up добавлен аддитивно — отдельный порт
+> (8090), отдельный Funnel (8443), отдельная БД. 443-й Funnel и tcm-events не
+> тронуты.
+
 ## Что сделано (код)
 
 - ✅ Базовое приложение импортировано в репозиторий (`index.html`, `app.js`,
@@ -25,18 +41,26 @@
   фронта), `deploy/README.md` (Tailscale Funnel), `deploy/popup.service`.
 - ✅ `.gitignore` защищает `server/.env`.
 
-## Что осталось сделать (инфраструктура — вне репозитория)
+## Что сделано (инфраструктура)
 
-- [ ] Завести **GitHub-репозиторий** для фронта и включить Pages
-      (**Settings → Pages → Source = GitHub Actions**).
-- [ ] Поднять **сервер**: PostgreSQL, `npm install`, `npm run migrate`,
-      заполнить `server/.env`, запустить systemd-юнит `popup`.
-- [ ] Создать **R2 bucket** + API-токен + CORS на origin фронта.
-- [ ] Включить **Tailscale Funnel** на порт 8090, получить адрес
-      `https://<host>.<tailnet>.ts.net`.
-- [ ] Вписать этот адрес в `window.APP_API_BASE` в `index.html`, запушить.
-- [ ] Прогнать end-to-end: сохранить датасет, перезагрузить, проверить
-      документы (загрузка/скачивание) на живом сайте.
+- ✅ **GitHub Pages** включён (Source = GitHub Actions). Сайт:
+      https://zay1d.github.io/Pop-Up-Assistant/
+- ✅ **Сервер** поднят: PostgreSQL БД `popup`, `npm install`, `npm run migrate`
+      (таблицы `workspace` + `documents`), `server/.env` заполнен (chmod 600),
+      systemd-юнит `popup` активен на 127.0.0.1:8090.
+- ✅ **Tailscale Funnel** на 8443 → 8090; API доступен снаружи по HTTPS,
+      CORS пропускает origin `https://zay1d.github.io`.
+- ✅ `window.APP_API_BASE` в `index.html` указывает на live API.
+
+## Что осталось сделать
+
+- [ ] **Cloudflare R2** (для документов): создать bucket `popup-documents`,
+      API-токен, CORS на `https://zay1d.github.io` (PUT+GET). Затем вписать
+      `R2_*` в `/opt/pop-up-assistant/server/.env` на сервере и
+      `sudo systemctl restart popup`. До этого сохранение датасета БЕЗ
+      вложений работает; с вложениями (фото/файлы) — упадёт на выгрузке в R2.
+- [ ] End-to-end проверка на живом сайте: сохранить датасет, перезагрузить,
+      (после R2) проверить загрузку/скачивание документов.
 
 Полные шаги — в `deploy/README.md`.
 
