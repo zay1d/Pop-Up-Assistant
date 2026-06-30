@@ -114,6 +114,13 @@ function fmtDateShort(s) { const d = parseDate(s); if (!d) return '—'; return 
 function daysInMonth(y, m) { return new Date(y, m+1, 0).getDate(); }
 function todayStr() { return ymd(new Date()); }
 function diffDaysIncl(a, b) { return Math.round((parseDate(b) - parseDate(a)) / 86400000) + 1; }
+function addDays(s, n) { const d = parseDate(s); if (!d) return s; d.setDate(d.getDate() + n); return ymd(d); }
+// Фактически занятый период зоны = аренда + дни на монтаж (до начала) и демонтаж (после конца).
+function occupiedSpan(p) {
+  const setup = Math.max(0, Number(p.setupDays) || 0);
+  const teardown = Math.max(0, Number(p.teardownDays) || 0);
+  return { start: addDays(p.start, -setup), end: addDays(p.end, teardown) };
+}
 function fmtMoney(n) { if (n == null || n === '' || isNaN(n)) return '—'; return Number(n).toLocaleString('ru-RU') + ' ' + State.currency; }
 function fmtNum(n) { if (n == null || n === '' || isNaN(n)) return '0'; return Number(n).toLocaleString('ru-RU'); }
 function fmtUsd(n) { if (n == null || n === '' || isNaN(n)) return '—'; return Number(n).toLocaleString('ru-RU') + ' $'; }
@@ -143,11 +150,16 @@ function overlaps(p, a, b) { return p.start <= b && p.end >= a; }
    С периодом [a,b] — бронь, пересекающаяся с этим интервалом (для выбранного месяца).
    Отказано/Завершено зону не занимают. Нет брони → Свободно (красный). */
 function zoneBooking(z, a, b) {
-  const ps = State.placements.filter(p => p.zoneId === z.id && p.status !== 'rejected' && p.status !== 'done');
   let rel;
   if (a && b) {
-    rel = ps.filter(p => overlaps(p, a, b)).sort((x, y) => x.start.localeCompare(y.start))[0];
+    // При просмотре конкретного месяца показываем и «Завершено» (серым)
+    const STATUS_PRIORITY = { busy: 0, process: 1, done: 2 };
+    const inPeriod = State.placements
+      .filter(p => p.zoneId === z.id && p.status !== 'rejected' && overlaps(p, a, b))
+      .sort((x, y) => (STATUS_PRIORITY[x.status] ?? 9) - (STATUS_PRIORITY[y.status] ?? 9) || x.start.localeCompare(y.start));
+    rel = inPeriod[0];
   } else {
+    const ps = State.placements.filter(p => p.zoneId === z.id && p.status !== 'rejected' && p.status !== 'done');
     const t = todayStr();
     rel = ps.find(p => p.start <= t && p.end >= t) || ps.filter(p => p.start > t).sort((x, y) => x.start.localeCompare(y.start))[0];
   }
@@ -158,6 +170,31 @@ function zoneBooking(z, a, b) {
 function zoneState(zoneId) {
   const b = zoneBooking(zoneById(zoneId));
   return { key: b.state, color: b.color, label: b.label };
+}
+
+// Стиль кружка на плане: заливка кружка отдельно от цвета пульсации.
+//  • свободно                                  → красный / пульс красный
+//  • бронь впереди (start>сегодня), не подтв.   → жёлтый  / пульс жёлтый
+//  • бронь впереди, подтверждено                → жёлтый  / пульс ЗЕЛЁНЫЙ
+//  • идёт сейчас, подтверждено                  → зелёный / пульс зелёный
+//  • идёт сейчас, переговоры                    → жёлтый  / пульс жёлтый
+const C_GREEN = '#10b981', C_YELLOW = '#f59e0b', C_RED = '#ef4444';
+function mapCircleStyle(zoneId) {
+  const b = zoneBooking(zoneById(zoneId));
+  if (!b.p) return { key: 'free', fill: C_RED, pulse: C_RED, label: 'Свободно', brand: '' };
+  const future = b.p.start > todayStr();      // дата начала ещё впереди
+  const confirmed = b.p.status === 'busy';    // «Подтверждено»
+  let fill, pulse, label;
+  if (future) {
+    fill = C_YELLOW;
+    pulse = confirmed ? C_GREEN : C_YELLOW;
+    label = confirmed ? 'Подтверждено · скоро' : 'Переговоры · скоро';
+  } else {
+    fill = confirmed ? C_GREEN : C_YELLOW;
+    pulse = fill;
+    label = confirmed ? 'Подтверждено' : 'Переговоры';
+  }
+  return { key: b.p.status, fill, pulse, label, brand: b.p.brand || '' };
 }
 
 /* ───────── Toast ───────── */
@@ -221,7 +258,8 @@ async function syncZones() {
     }
   }
   for (const z of existing) {
-    if (!seedIds.has(z.id)) await dbDel('zones', z.id);  // зоны, которых больше нет в файле
+    // удаляем только зоны из старого файла; вручную добавленные (custom) не трогаем
+    if (!seedIds.has(z.id) && !z.custom) await dbDel('zones', z.id);
   }
 }
 
@@ -622,6 +660,10 @@ function renderMap(v, opts) {
     editBtn.onclick = () => { Map.edit = !Map.edit; Map.sel = null; go('map'); };
     gEdit.appendChild(editBtn);
 
+    const addZoneBtn = el('button', 'rail-btn', '➕ Добавить локацию');
+    addZoneBtn.onclick = () => addZonePrompt();
+    gEdit.appendChild(addZoneBtn);
+
     if (Map.edit) {
       gEdit.appendChild(el('div', 'rail-title', 'Выберите локацию,<br>затем обведите её на плане'));
       const pick = el('div', 'zone-pick');
@@ -669,7 +711,7 @@ function renderMap(v, opts) {
   const img = el('img', 'plan');
   img.src = fl.plan;
   img.draggable = false;
-  img.onload = () => { MAP_BASE_W = img.naturalWidth || MAP_BASE_W; mapResetView(); mapApplyTransform(); drawCircles(); drawLabels(); };
+  img.onload = () => { MAP_BASE_W = img.naturalWidth || MAP_BASE_W; mapResetView(); mapApplyTransform(); drawCircles(); drawLabels(); drawBrands(); };
   img.onerror = () => { vp.innerHTML = `<div class="map-empty"><div style="font-size:40px">🗺️</div><p>Файл плана не найден: ${esc(fl.plan)}</p></div>`; };
   canvas.appendChild(img);
   vp.appendChild(canvas);
@@ -686,9 +728,23 @@ function renderMap(v, opts) {
     canvas.querySelectorAll('.map-label').forEach(n => n.remove());
     for (const lb of State.labels.filter(l => l.floor === State.floor)) canvas.appendChild(makeLabel(lb));
   }
-  drawCircles(); drawLabels();
+  function drawBrands() {
+    canvas.querySelectorAll('.lc-brand').forEach(n => n.remove());
+    const items = [];
+    for (const z of zonesHere) {
+      if (z.mapX == null || z.mapY == null) continue;
+      const st = mapCircleStyle(z.id);
+      if (!st.brand) continue;                 // подпись только если есть арендатор
+      const lab = makeBrandLabel(z, st);
+      canvas.appendChild(lab);
+      items.push({ z, el: lab });
+    }
+    // авто-распределение по вертикали, чтобы подписи не налезали друг на друга
+    requestAnimationFrame(() => resolveBrandOverlaps(items));
+  }
+  drawCircles(); drawLabels(); drawBrands();
   // перерисовать после загрузки/масштабирования картинки
-  setTimeout(() => { drawCircles(); drawLabels(); }, 0);
+  setTimeout(() => { drawCircles(); drawLabels(); drawBrands(); }, 0);
 
   mapBindInteractions(vp, canvas, () => zonesHere);
 
@@ -724,21 +780,20 @@ function mapZoomAt(vx, vy, factor) {
 
 /* Кружок локации (привязан к плану в %, масштабируется вместе с холстом) */
 function makeCircle(z) {
-  const st = zoneState(z.id);            // занято / в процессе / свободно
-  const color = st.color;
+  const st = mapCircleStyle(z.id);       // заливка + цвет пульсации по статусу/дате
   const r = (z.mapR || DEFAULT_R) * MAP_BASE_W; // радиус в базовых px
   const c = el('div', 'loc-circle pulse pulse-' + st.key + (Map.edit ? ' editing' : ''));
   c.style.left = z.mapX + '%';
   c.style.top = z.mapY + '%';
   c.style.width = c.style.height = (r * 2) + 'px';
-  c.style.background = hexToRgba(color, 0.72);          // ярче заливка
-  c.style.borderColor = color;
-  c.style.borderWidth = Math.max(4, r * 0.06) + 'px';   // заметная рамка, пропорц. размеру
-  c.style.setProperty('--glow', hexToRgba(color, 0.85)); // ярче пульсация
-  c.style.setProperty('--glowMax', hexToRgba(color, 0)); // прозрачный край волны
+  c.style.background = hexToRgba(st.fill, 0.72);          // заливка кружка
+  c.style.borderColor = st.fill;
+  c.style.borderWidth = Math.max(4, r * 0.06) + 'px';     // заметная рамка, пропорц. размеру
+  c.style.setProperty('--glow', hexToRgba(st.pulse, 0.85)); // цвет волны пульсации
+  c.style.setProperty('--glowMax', hexToRgba(st.pulse, 0)); // прозрачный край волны
   c.dataset.zid = z.id;
   c.innerHTML = `<span class="lc-code">${esc(z.code || '')}</span>`;
-  c.title = z.name + (z.code ? ' · ' + z.code : '') + ' — ' + st.label;
+  c.title = z.name + (z.code ? ' · ' + z.code : '') + ' — ' + st.label + (st.brand ? ' · ' + st.brand : '');
   // Код — крупный, пропорционально размеру кружка (масштабируется вместе с картой)
   const codeEl = c.querySelector('.lc-code');
   codeEl.style.fontSize = Math.round(Math.max(r * 0.6, 14)) + 'px';
@@ -779,6 +834,52 @@ function editZoneCode(z) {
   dbPut('zones', z).then(() => { toast('Код сохранён', 'ok'); go('map'); });
 }
 
+/* Подпись арендатора рядом с кружком (имя бренда + статус). Позиция — под кружком,
+   вертикальный сдвиг задаётся в базовых px (масштабируется вместе с картой). */
+function makeBrandLabel(z, st) {
+  const r = (z.mapR || DEFAULT_R) * MAP_BASE_W;
+  const fs = Math.max(0.011 * MAP_BASE_W, 10);
+  const d = document.createElement('div');
+  d.className = 'lc-brand';
+  d.style.left = z.mapX + '%';
+  d.style.top = z.mapY + '%';
+  d.style.marginTop = (r + r * 0.25) + 'px';   // ниже кружка
+  d.style.fontSize = fs + 'px';
+  d.dataset.zid = z.id;
+  d.innerHTML = `<span class="lcb-name">${esc(st.brand)}</span>`;
+  return d;
+}
+// Раздвинуть подписи арендаторов по вертикали, чтобы не налезали друг на друга.
+// Работаем в базовых координатах холста (масштаб однородный → перекрытия не зависят от зума).
+function resolveBrandOverlaps(items) {
+  if (!items || !items.length) return;
+  const scale = Map.scale || 1;
+  const data = items.map(it => {
+    const rect = it.el.getBoundingClientRect();
+    const r = (it.z.mapR || DEFAULT_R) * MAP_BASE_W;
+    const circleCenterY = (it.z.mapY / 100) * MAP_BASE_W;
+    return {
+      el: it.el,
+      w: rect.width / scale, h: rect.height / scale,
+      cx: (it.z.mapX / 100) * MAP_BASE_W,
+      circleCenterY,
+      top: circleCenterY + r + r * 0.3,        // исходный верх подписи (база)
+    };
+  });
+  data.sort((a, b) => a.top - b.top);
+  const vGap = Math.max(4, 0.006 * MAP_BASE_W);
+  const placed = [];
+  for (const d of data) {
+    placed.sort((a, b) => a.top - b.top);
+    for (const p of placed) {
+      const xOverlap = Math.abs(d.cx - p.cx) < (d.w + p.w) / 2 + 4;
+      if (xOverlap && d.top < p.top + p.h + vGap) d.top = p.top + p.h + vGap;
+    }
+    placed.push(d);
+  }
+  for (const d of data) d.el.style.marginTop = (d.top - d.circleCenterY) + 'px';
+}
+
 /* Редактируемая подпись (название магазина) поверх карты */
 function makeLabel(lb) {
   const fs = (lb.size || 0.018) * MAP_BASE_W;
@@ -814,6 +915,45 @@ async function addMapLabel() {
   await loadAll();
   toast('Подпись добавлена', 'ok');
   go('map');
+}
+
+/* Добавить локацию вручную (на текущий этаж) */
+function addZonePrompt() {
+  const fl = FLOORS.find(x => x.floor === State.floor);
+  openModal(`
+    <div class="modal-head"><h3>Новая локация · ${esc(fl ? fl.label : State.floor + ' этаж')}</h3>
+      <button class="modal-close" data-close>×</button></div>
+    <div class="modal-body">
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div class="field"><label>Код локации *</label>
+          <input id="nz-code" placeholder="Например, L1.13"></div>
+        <div class="field"><label>Название локации *</label>
+          <input id="nz-name" placeholder="Например, Зона у входа"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close>Отмена</button>
+      <button class="btn btn-primary" id="nz-save">Добавить</button>
+    </div>`);
+
+  const save = async () => {
+    const code = $('#nz-code').value.trim();
+    const name = $('#nz-name').value.trim();
+    if (!code) return toast('Введите код локации', 'err');
+    if (!name) return toast('Введите название локации', 'err');
+    if (State.zones.some(z => (z.code || '').toLowerCase() === code.toLowerCase()))
+      return toast('Локация с таким кодом уже есть', 'err');
+    await dbPut('zones', { id: 'zc' + uid(), name, floor: State.floor, code, dayRate: 0, mapX: null, mapY: null, custom: true });
+    State.zones = (await dbGetAll('zones')).sort((a, b) => (a.floor - b.floor) || a.name.localeCompare(b.name, 'ru'));
+    closeModal();
+    toast('Локация добавлена', 'ok');
+    if (!Map.edit) Map.edit = true;   // показать список локаций, чтобы можно было сразу разместить на плане
+    go('map');
+  };
+  $('#nz-save').onclick = save;
+  $('#nz-code').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('#nz-name').focus(); } });
+  $('#nz-name').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
+  setTimeout(() => $('#nz-code').focus(), 30);
 }
 
 /* Контекстное меню кружка (правая кнопка мыши) */
@@ -1026,19 +1166,18 @@ function mapBindInteractions(vp, canvas, getZones) {
    ОБЗОР ЭТАЖЕЙ — 4 этажа (1–4) на одном экране, уменьшенные, с зонами
    ═══════════════════════════════════════════════════════════════ */
 function makeMiniCircle(z) {
-  const st = zoneState(z.id);
-  const color = st.color;
+  const st = mapCircleStyle(z.id);        // та же логика цвета/пульсации, что и на плане
   const r = z.mapR || DEFAULT_R;          // доля ширины карты
   const c = el('div', 'loc-circle pulse mini pulse-' + st.key);
   c.style.left = z.mapX + '%';
   c.style.top = z.mapY + '%';
   c.style.width = (r * 2 * 100) + '%';     // % ширины контейнера → отзывчиво
   c.style.aspectRatio = '1';
-  c.style.background = hexToRgba(color, 0.72);
-  c.style.borderColor = color;
-  c.style.setProperty('--glow', hexToRgba(color, 0.85));
-  c.style.setProperty('--glowMax', hexToRgba(color, 0));
-  c.title = z.name + (z.code ? ' · ' + z.code : '') + ' — ' + st.label;
+  c.style.background = hexToRgba(st.fill, 0.72);
+  c.style.borderColor = st.fill;
+  c.style.setProperty('--glow', hexToRgba(st.pulse, 0.85));
+  c.style.setProperty('--glowMax', hexToRgba(st.pulse, 0));
+  c.title = z.name + (z.code ? ' · ' + z.code : '') + ' — ' + st.label + (st.brand ? ' · ' + st.brand : '');
   c.innerHTML = `<span class="lc-code" style="font-size:${(r * 0.62 * 100).toFixed(2)}cqw">${esc(z.code || '')}</span>`;
   c.onclick = (e) => { e.stopPropagation(); openZoneSheet(z.id); };
   return c;
@@ -1197,8 +1336,9 @@ function renderBooking(v) {
 /* ───────── Девочка, скачущая по зонам (декоративная анимация) ───────── */
 let _charTimer = null, _charEl = null, _charPos = { r: 0, c: 0, dir: 1 };
 // Девочка с руками за спиной (ходит, думает)
-const GIRL_SVG = `<svg class="girl walking" viewBox="0 0 60 92" width="44" height="68" xmlns="http://www.w3.org/2000/svg">
-  <defs><linearGradient id="grlDress" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff8fc0"/><stop offset="1" stop-color="#e0509a"/></linearGradient></defs>
+const GIRL_SVG = `<svg class="girl walking" viewBox="0 0 60 92" width="44" height="68" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <defs><linearGradient id="grlDress" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff8fc0"/><stop offset="1" stop-color="#e0509a"/></linearGradient>
+    <clipPath id="grlFace"><circle cx="30" cy="24" r="19"/></clipPath></defs>
   <g class="leg leg-l"><rect x="25" y="63" width="4.2" height="21" rx="2.1" fill="#ffd9b8"/><ellipse cx="27" cy="85" rx="4" ry="2.4" fill="#ff5ea0"/></g>
   <g class="leg leg-r"><rect x="31" y="63" width="4.2" height="21" rx="2.1" fill="#ffd9b8"/><ellipse cx="33" cy="85" rx="4" ry="2.4" fill="#ff5ea0"/></g>
   <!-- руки за спиной: лёгкие плечи-култышки за платьем -->
@@ -1207,17 +1347,10 @@ const GIRL_SVG = `<svg class="girl walking" viewBox="0 0 60 92" width="44" heigh
   <path d="M21 43 L39 43 L47 70 L13 70 Z" fill="url(#grlDress)" stroke="#cf4a90" stroke-width="0.5"/>
   <rect x="27.6" y="36" width="4.8" height="9" rx="2" fill="#ffd9b8"/>
   <g class="head">
-    <ellipse cx="30" cy="27" rx="17" ry="18" fill="#7a4a2b"/>
-    <ellipse cx="20" cy="36" rx="4" ry="9" fill="#7a4a2b"/>
-    <ellipse cx="40" cy="36" rx="4" ry="9" fill="#7a4a2b"/>
-    <circle cx="30" cy="27" r="13" fill="#ffe2c6"/>
-    <path d="M17 25 q4 -15 13 -15 q9 0 13 15 q-7 -7 -13 -7 q-6 0 -13 7Z" fill="#7a4a2b"/>
-    <ellipse cx="25.5" cy="28" rx="1.7" ry="2.3" fill="#42302a"/>
-    <ellipse cx="34.5" cy="28" rx="1.7" ry="2.3" fill="#42302a"/>
-    <circle cx="23" cy="33" r="2.1" fill="#ff9db4" opacity=".75"/>
-    <circle cx="37" cy="33" r="2.1" fill="#ff9db4" opacity=".75"/>
-    <path d="M26.5 33.5 q3.5 3.5 7 0" stroke="#c4596e" stroke-width="1.4" fill="none" stroke-linecap="round"/>
-    <circle cx="42" cy="17" r="3.2" fill="#ff5ea0"/><circle cx="42" cy="17" r="1.3" fill="#ffec99"/>
+    <circle cx="30" cy="24" r="19.6" fill="#fff"/>
+    <image href="face.png" xlink:href="face.png" x="11" y="5" width="38" height="38" clip-path="url(#grlFace)" preserveAspectRatio="xMidYMid slice"/>
+    <circle cx="30" cy="24" r="19" fill="none" stroke="#e0509a" stroke-width="1"/>
+    <circle cx="45" cy="10" r="3.2" fill="#ff5ea0"/><circle cx="45" cy="10" r="1.3" fill="#ffec99"/>
   </g>
 </svg>`;
 function stopChar() {
@@ -1286,7 +1419,76 @@ function startChar() {
 }
 
 /* Три одинаковые корзины внизу: Завершено · Текущие · Итого накопительно (реальные деньги, без переговоров) */
-let _baskets = null, _rainTimer = null;
+let _baskets = null, _rainTimer = null, _rainTimer2 = null;
+// Стальной сейф (изображение для корзинки «Итого накопительно»)
+const SAFE_SVG = `<svg class="safe-svg" viewBox="0 0 100 100" width="82" height="82" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="safeSteel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#eef2f6"/><stop offset="0.5" stop-color="#b9c3cf"/><stop offset="1" stop-color="#828e9c"/>
+    </linearGradient>
+    <radialGradient id="safeDial" cx="0.5" cy="0.4" r="0.65">
+      <stop offset="0" stop-color="#f4f7fa"/><stop offset="1" stop-color="#94a0ad"/>
+    </radialGradient>
+  </defs>
+  <rect x="9" y="11" width="82" height="78" rx="9" fill="url(#safeSteel)" stroke="#69737f" stroke-width="2.2"/>
+  <rect x="19" y="20" width="56" height="60" rx="6" fill="#ccd4dc" stroke="#7b8794" stroke-width="1.6"/>
+  <circle cx="44" cy="50" r="14" fill="url(#safeDial)" stroke="#69737f" stroke-width="2.2"/>
+  <circle cx="44" cy="50" r="3.6" fill="#69737f"/>
+  <g stroke="#7b8794" stroke-width="2.2" stroke-linecap="round">
+    <line x1="44" y1="37" x2="44" y2="41"/><line x1="44" y1="59" x2="44" y2="63"/>
+    <line x1="31" y1="50" x2="35" y2="50"/><line x1="53" y1="50" x2="57" y2="50"/>
+  </g>
+  <rect x="65" y="46" width="13" height="7" rx="3.5" fill="#7b8794"/>
+  <circle cx="24" cy="25" r="2" fill="#7b8794"/><circle cx="70" cy="25" r="2" fill="#7b8794"/>
+  <circle cx="24" cy="75" r="2" fill="#7b8794"/><circle cx="70" cy="75" r="2" fill="#7b8794"/>
+  <rect x="15" y="88" width="9" height="7" rx="2" fill="#69737f"/>
+  <rect x="76" y="88" width="9" height="7" rx="2" fill="#69737f"/>
+</svg>`;
+const BASKET_TITLES = { done: 'Завершено', current: 'Текущие', future: 'Будущие поступления', total: 'Итого накопительно' };
+
+// Список размещений, относящихся к корзинке (для окна с информацией)
+function basketList(key) {
+  const today = todayStr();
+  const yr = String(new Date().getFullYear());
+  const inYear = p => (p.end || '').slice(0, 4) === yr;
+  let ps;
+  if (key === 'done') ps = State.placements.filter(p => p.status === 'done' && inYear(p));
+  else if (key === 'current') ps = State.placements.filter(p => p.status === 'busy' && isActiveToday(p));
+  else if (key === 'future') ps = State.placements.filter(p => p.status !== 'rejected' && p.start > today);
+  else ps = State.placements.filter(p =>
+    (p.status === 'done' && inYear(p)) ||
+    (p.status === 'busy' && isActiveToday(p)) ||
+    (p.status === 'busy' && p.end < today && inYear(p)));
+  return ps.sort((a, b) => (a.start || '').localeCompare(b.start || ''));
+}
+
+// Окно с информацией по корзинке/сейфу: Зона · Арендатор · Даты · Статус · Сумма
+function openBasketInfo(key) {
+  const list = basketList(key);
+  const total = list.reduce((s, p) => s + placementMoney(p).totalAgreed, 0);
+  const rows = list.map(p => {
+    const z = zoneById(p.zoneId);
+    const si = statusInfo(p.status);
+    return `<tr>
+      <td>${esc(z ? (z.code + ' · ' + z.name) : '—')}</td>
+      <td><b>${esc(p.brand || '—')}</b></td>
+      <td>${fmtDate(p.start)}</td>
+      <td>${fmtDate(p.end)}</td>
+      <td><span class="bi-status" style="background:${si.color}22;color:${si.color}">${si.label}</span></td>
+      <td class="bi-sum">${fmtUsd(placementMoney(p).totalAgreed)}</td>
+    </tr>`;
+  }).join('');
+  openModal(`
+    <div class="modal-head"><h3>${key === 'total' ? '🔒' : '🧺'} ${BASKET_TITLES[key]} · ${fmtUsd(total)}</h3><button class="modal-close" data-close>×</button></div>
+    <div class="modal-body">
+      ${list.length ? `<table class="basket-info">
+        <thead><tr><th>Зона</th><th>Арендатор</th><th>Начало</th><th>Окончание</th><th>Статус</th><th>Сумма</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr><td colspan="5">Итого</td><td class="bi-sum">${fmtUsd(total)}</td></tr></tfoot>
+      </table>` : `<div class="muted" style="text-align:center;padding:26px">Пока пусто</div>`}
+    </div>
+    <div class="modal-foot"><button class="btn" data-close>Закрыть</button></div>`, true);
+}
 function busyTotalUsd(a, b) {  // сумма «Подтверждено» (за период [a,b], иначе активные сейчас)
   let s = 0;
   for (const z of State.zones) { const bk = zoneBooking(z, a, b); if (bk.state === 'busy' && bk.p) s += placementMoney(bk.p).totalAgreed; }
@@ -1299,6 +1501,7 @@ function doneTotalUsd(year) {   // сумма всех Завершённых з
 }
 function stopMoneyRain() {
   if (_rainTimer) { clearInterval(_rainTimer); _rainTimer = null; }
+  if (_rainTimer2) { clearInterval(_rainTimer2); _rainTimer2 = null; }
   if (_baskets) { _baskets.remove(); _baskets = null; }
   document.querySelectorAll('.bk-dollar').forEach(d => d.remove());
 }
@@ -1306,47 +1509,86 @@ function startMoneyRain(container) {
   stopMoneyRain();
   const year = new Date().getFullYear();
   const yStart = `${year}-01-01`, yEnd = `${year}-12-31`;
+  const today = todayStr();
   const doneSum = doneTotalUsd(year);
-  const busySum = State.placements.filter(p => p.status === 'busy' && overlaps(p, yStart, yEnd)).reduce((s, p) => s + placementMoney(p).totalAgreed, 0);
-  const itogo = doneSum + busySum;
-  if (!doneSum && !busySum) return;
+  // Текущие: Подтверждено И аренда идёт прямо сейчас (start ≤ today ≤ end)
+  const busyCurrentSum = State.placements
+    .filter(p => p.status === 'busy' && isActiveToday(p))
+    .reduce((s, p) => s + placementMoney(p).totalAgreed, 0);
+  // Завершённые busy: Подтверждено, но срок уже истёк (end < today) — идут в Итого
+  const busyExpiredSum = State.placements
+    .filter(p => p.status === 'busy' && p.end < today && overlaps(p, yStart, yEnd))
+    .reduce((s, p) => s + placementMoney(p).totalAgreed, 0);
+  const itogo = doneSum + busyCurrentSum + busyExpiredSum;
+  // Будущие поступления: любой статус кроме «Отказано», дата начала ещё впереди (start > today)
+  const futureSum = State.placements
+    .filter(p => p.status !== 'rejected' && p.start > today)
+    .reduce((s, p) => s + placementMoney(p).totalAgreed, 0);
+  if (!doneSum && !busyCurrentSum && !busyExpiredSum && !futureSum) return;
 
-  const mk = (sum, cap) => `<div class="bk3"><div class="bk3-sum">${fmtUsd(sum)}</div><div class="bk3-ic">🧺</div><div class="bk3-cap">${cap}</div></div>`;
+  const mk = (sum, cap, cls) => `<div class="bk3 ${cls}"><div class="bk3-sum">${fmtUsd(sum)}</div><div class="bk3-ic">🧺</div><div class="bk3-cap">${cap}</div></div>`;
+  const mkSafe = (sum, cap, cls) => `<div class="bk3 ${cls}"><div class="bk3-sum">${fmtUsd(sum)}</div><div class="bk-safe">${SAFE_SVG}</div><div class="bk3-cap">${cap}</div></div>`;
   const bar = el('div', 'baskets-bar');
-  bar.innerHTML = mk(doneSum, 'Завершено') + mk(busySum, 'Текущие') + mk(itogo, 'Итого накопительно');
+  bar.innerHTML =
+    mk(doneSum, 'Завершено', 'bk-done') +
+    mk(busyCurrentSum, 'Текущие', 'bk-current') +
+    mk(futureSum, 'Будущие поступления', 'bk-future') +
+    mkSafe(itogo, 'Итого накопительно', 'bk-total');
   (container || document.body).appendChild(bar);
   _baskets = bar;
 
-  // золотые $ летят из активных зон (Подтверждено + сегодня внутри дат) в корзинку «Текущие»
-  const basketCurrent = bar.querySelectorAll('.bk3')[1];
-  _rainTimer = setInterval(() => {
-    const activePlacements = State.placements.filter(p => p.status === 'busy' && isActiveToday(p));
-    if (!activePlacements.length || !basketCurrent) return;
-    const p = activePlacements[Math.floor(Math.random() * activePlacements.length)];
-    const pill = document.querySelector(`.bk-pill[data-p="${p.id}"]`);
-    if (!pill) return;
-    const fromRect = pill.getBoundingClientRect();
-    const toRect = basketCurrent.getBoundingClientRect();
-    if (fromRect.width === 0 || toRect.width === 0) return;
-    const startX = fromRect.left + window.scrollX + Math.random() * Math.max(fromRect.width - 10, 10);
-    const startY = fromRect.top + window.scrollY + fromRect.height * 0.3;
+  const bDone = bar.querySelector('.bk-done');
+  const bCurrent = bar.querySelector('.bk-current');
+  const bFuture = bar.querySelector('.bk-future');
+  const bTotal = bar.querySelector('.bk-total');
+  const safeEl = bTotal ? bTotal.querySelector('.bk-safe') : null;
+
+  // Клик по корзинке/сейфу — окно с информацией
+  if (bDone) bDone.onclick = () => openBasketInfo('done');
+  if (bCurrent) bCurrent.onclick = () => openBasketInfo('current');
+  if (bFuture) bFuture.onclick = () => openBasketInfo('future');
+  if (bTotal) bTotal.onclick = () => openBasketInfo('total');
+
+  const bounce = (elm) => { if (!elm) return; elm.classList.remove('bk3-bounce'); void elm.offsetWidth; elm.classList.add('bk3-bounce'); };
+  const swell = (elm) => { if (!elm) return; elm.classList.remove('swell'); void elm.offsetWidth; elm.classList.add('swell'); };
+  const flyDollar = (fromRect, toRect, slow, onLand) => {
+    if (!fromRect.width || !toRect.width) return;
+    const startX = fromRect.left + window.scrollX + (slow ? fromRect.width / 2 - 8 : Math.random() * Math.max(fromRect.width - 10, 10));
+    const startY = fromRect.top + window.scrollY + fromRect.height * (slow ? 0.55 : 0.3);
     const endX = toRect.left + window.scrollX + toRect.width / 2 - 10;
-    const endY = toRect.top + window.scrollY + toRect.height * 0.6;
+    const endY = toRect.top + window.scrollY + toRect.height * (slow ? 0.5 : 0.6);
     const d = document.createElement('span');
-    d.className = 'bk-dollar';
+    d.className = 'bk-dollar' + (slow ? ' slow' : '');
     d.textContent = '$';
     d.style.left = startX + 'px';
     d.style.top = startY + 'px';
     d.style.setProperty('--dx', (endX - startX) + 'px');
     d.style.setProperty('--dy', (endY - startY) + 'px');
     document.body.appendChild(d);
-    setTimeout(() => {
-      d.remove();
-      basketCurrent.classList.remove('bk3-bounce');
-      void basketCurrent.offsetWidth;
-      basketCurrent.classList.add('bk3-bounce');
-    }, 1500);
+    setTimeout(() => { d.remove(); if (onLand) onLand(); }, slow ? 2900 : 1500);
+  };
+
+  // 1) $ летят из активных зон (Подтверждено + сегодня внутри дат) в «Текущие»
+  _rainTimer = setInterval(() => {
+    const active = State.placements.filter(p => p.status === 'busy' && isActiveToday(p));
+    if (!active.length || !bCurrent) return;
+    const p = active[Math.floor(Math.random() * active.length)];
+    const pill = document.querySelector(`.bk-pill[data-p="${p.id}"]`);
+    if (!pill) return;
+    flyDollar(pill.getBoundingClientRect(), bCurrent.getBoundingClientRect(), false, () => bounce(bCurrent));
   }, 1800);
+
+  // 2) $ медленно капают из «Завершено» и «Текущие» в «Итого накопительно»
+  const totalSources = [];
+  if (doneSum > 0) totalSources.push(bDone);
+  if (busyCurrentSum > 0) totalSources.push(bCurrent);
+  if (totalSources.length && bTotal) {
+    _rainTimer2 = setInterval(() => {
+      const src = totalSources[Math.floor(Math.random() * totalSources.length)];
+      if (!src) return;
+      flyDollar(src.getBoundingClientRect(), bTotal.getBoundingClientRect(), true, () => swell(safeEl));
+    }, 3000);
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1455,6 +1697,7 @@ async function openPlacementCard(pid) {
             <div class="chz">📍 ${esc(z?z.name:'—')} · ${FLOORS.find(f=>f.floor===(z?z.floor:0))?.label||''}</div>
             <table class="info-table">
               <tr><td class="k">Период</td><td>${fmtDate(p.start)} – ${fmtDate(p.end)} <span class="muted">(${diffDaysIncl(p.start,p.end)} дн.)</span></td></tr>
+              <tr><td class="k">Монтаж · демонтаж</td><td>${Number(p.setupDays)||0} дн. · ${Number(p.teardownDays)||0} дн.${(Number(p.setupDays)||0)||(Number(p.teardownDays)||0)?` <span class="muted">(зона занята ${fmtDate(occupiedSpan(p).start)} – ${fmtDate(occupiedSpan(p).end)})</span>`:''}</td></tr>
               <tr><td class="k">Контактное лицо</td><td>${esc(p.contactPerson)||'—'}</td></tr>
               <tr><td class="k">Телефон</td><td>${p.phone?`<a href="tel:${esc(p.phone)}">${esc(p.phone)}</a>`:'—'}</td></tr>
               <tr><td class="k">E-mail</td><td>${p.email?`<a href="mailto:${esc(p.email)}">${esc(p.email)}</a>`:'—'}</td></tr>
@@ -1857,26 +2100,16 @@ async function openPlacementForm(pid, preset) {
         <div class="field full"><label>Зона / локация *</label><select id="f-zone">${zoneOpts}</select></div>
         <div class="field"><label>Дата начала *</label><input type="date" id="f-start" value="${p?p.start:(preset.start||'')}"></div>
         <div class="field"><label>Дата окончания *</label><input type="date" id="f-end" value="${p?p.end:(preset.end||'')}"></div>
+        <div class="field"><label>Дней на монтаж</label><input id="f-setup" type="number" min="0" value="${p&&p.setupDays!=null?p.setupDays:''}" placeholder="0"><div class="hint">до даты начала</div></div>
+        <div class="field"><label>Дней на демонтаж</label><input id="f-teardown" type="number" min="0" value="${p&&p.teardownDays!=null?p.teardownDays:''}" placeholder="0"><div class="hint">после даты окончания</div></div>
         <div class="field full"><div class="form-warn" id="f-clash" hidden></div></div>
-        <div class="field full"><label>Цвет в календаре</label><div class="color-row" id="f-colors">${swatches}</div></div>
+        <div class="field full"><label>Статус договора</label><select id="f-status">${statusOpts}</select></div>
 
-        <div class="field"><label>Контактное лицо</label><input id="f-contact" value="${esc(p?p.contactPerson:'')}"></div>
-        <div class="field"><label>Статус договора</label><select id="f-status">${statusOpts}</select></div>
-        <div class="field"><label>Телефон</label><input id="f-phone" value="${esc(p?p.phone:'')}" placeholder="+998 ..."></div>
-        <div class="field"><label>E-mail</label><input id="f-email" value="${esc(p?p.email:'')}"></div>
-
-        <div class="field"><label>Размеры конструкции</label><input id="f-dim" value="${esc(p?p.dimensions:'')}" placeholder="напр. 3×2×2,5 м"></div>
-        <div class="field"><label>Площадь, м²</label><input id="f-area" type="number" value="${esc(p?p.area:'')}" placeholder="напр. 6"></div>
         <div class="field"><label>Стоимость за день ($)</label><input id="f-dayrate" type="number" readonly value="" style="background:var(--surface-2)"><div class="hint">из зоны (изменяется в файле)</div></div>
         <div class="field"><label>Скидка, %</label><input id="f-discount" type="number" min="0" max="100" value="${p&&p.discount!=null?p.discount:''}" placeholder="0"></div>
         <div class="field full"><label class="check-row"><input type="checkbox" id="f-manual-on" ${p&&p.manualCost!=null&&p.manualCost!==''?'checked':''}> Добавить стоимость вручную</label>
           <input id="f-manual" type="number" placeholder="Сумма к оплате, $" value="${p&&p.manualCost!=null?p.manualCost:''}"></div>
         <div class="field full"><label>Расчёт стоимости аренды</label><div class="rate-summary" id="f-totals">—</div></div>
-        <div class="field full"><label>Подрядчик по изготовлению</label><input id="f-contractor" value="${esc(p?p.contractor:'')}"></div>
-        <div class="field"><label>Стоимость изготовления (${esc(State.currency)})</label><input id="f-make" type="number" value="${p&&p.costMake!=null?p.costMake:''}"></div>
-
-        <div class="field full"><label>Ссылка на коммерческие документы</label><input id="f-docs" value="${esc(p?p.docsLink:'')}" placeholder="https://..."></div>
-        <div class="field full"><label>Комментарии и особенности</label><textarea id="f-comments">${esc(p?p.comments:'')}</textarea></div>
 
         <div class="field full">
           <label>Фото и файлы (хранятся внутри приложения)</label>
@@ -1884,12 +2117,35 @@ async function openPlacementForm(pid, preset) {
           <input type="file" id="fileInput" multiple style="display:none" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx">
           <div class="attach-list" id="attachList"></div>
         </div>
+
+        <div class="field full"><button type="button" class="more-toggle" id="moreBtn">⊕ Дополнительно</button></div>
+
+        <div class="form-extra" id="f-extra" hidden>
+          <div class="field full"><label>Цвет в календаре</label><div class="color-row" id="f-colors">${swatches}</div></div>
+          <div class="field"><label>Контактное лицо</label><input id="f-contact" value="${esc(p?p.contactPerson:'')}"></div>
+          <div class="field"><label>Телефон</label><input id="f-phone" value="${esc(p?p.phone:'')}" placeholder="+998 ..."></div>
+          <div class="field"><label>E-mail</label><input id="f-email" value="${esc(p?p.email:'')}"></div>
+          <div class="field"><label>Размеры конструкции</label><input id="f-dim" value="${esc(p?p.dimensions:'')}" placeholder="напр. 3×2×2,5 м"></div>
+          <div class="field"><label>Площадь, м²</label><input id="f-area" type="number" value="${esc(p?p.area:'')}" placeholder="напр. 6"></div>
+          <div class="field"><label>Стоимость изготовления (${esc(State.currency)})</label><input id="f-make" type="number" value="${p&&p.costMake!=null?p.costMake:''}"></div>
+          <div class="field full"><label>Подрядчик по изготовлению</label><input id="f-contractor" value="${esc(p?p.contractor:'')}"></div>
+          <div class="field full"><label>Ссылка на коммерческие документы</label><input id="f-docs" value="${esc(p?p.docsLink:'')}" placeholder="https://..."></div>
+          <div class="field full"><label>Комментарии и особенности</label><textarea id="f-comments">${esc(p?p.comments:'')}</textarea></div>
+        </div>
       </div>
     </div>
     <div class="modal-foot">
       <button class="btn" data-close>Отмена</button>
       <button class="btn btn-primary" id="saveP">${editing?'Сохранить':'Создать'}</button>
     </div>`, true);
+
+  // Кнопка «Дополнительно» — раскрыть/свернуть второстепенные поля
+  $('#moreBtn').onclick = () => {
+    const extra = $('#f-extra');
+    const show = extra.hidden;
+    extra.hidden = !show;
+    $('#moreBtn').innerHTML = show ? '⊖ Свернуть дополнительно' : '⊕ Дополнительно';
+  };
 
   // Цвет
   let selColor = curColor;
@@ -1924,25 +2180,30 @@ async function openPlacementForm(pid, preset) {
   });
   recalcRates();
 
-  // Мгновенная проверка пересечения дат с уже существующей бронью
+  // Мгновенная проверка пересечения с учётом дней на монтаж/демонтаж
   const checkClash = () => {
     const zoneId = $('#f-zone').value, s = $('#f-start').value, e = $('#f-end').value;
     const warn = $('#f-clash');
     const clear = () => { warn.hidden = true; warn.textContent = ''; $('#f-start').classList.remove('field-bad'); $('#f-end').classList.remove('field-bad'); $('#saveP').disabled = false; };
     if (!zoneId || (!s && !e)) return clear();
     const a = s || e, b = e || s;
-    const aa = a < b ? a : b, bb = a < b ? b : a;
+    const rs = a < b ? a : b, re = a < b ? b : a;
+    const setup = Math.max(0, Number($('#f-setup').value) || 0);
+    const teardown = Math.max(0, Number($('#f-teardown').value) || 0);
+    const newStart = addDays(rs, -setup), newEnd = addDays(re, teardown);
     const clash = State.placements.find(x => x.zoneId === zoneId && x.id !== pid
-      && x.status !== 'rejected' && x.status !== 'done' && overlaps(x, aa, bb));
+      && x.status !== 'rejected' && x.status !== 'done'
+      && (() => { const sp = occupiedSpan(x); return newStart <= sp.end && newEnd >= sp.start; })());
     if (!clash) return clear();
+    const sp = occupiedSpan(clash);
+    const buffered = (sp.start !== clash.start || sp.end !== clash.end);
     warn.hidden = false;
-    warn.textContent = `❌ Эти даты заняты: «${clash.brand}» (${fmtDate(clash.start)} – ${fmtDate(clash.end)}). Выберите другие.`;
-    // подсветить конкретное поле, если именно его дата попала в чужую бронь
-    $('#f-start').classList.toggle('field-bad', !!s && s >= clash.start && s <= clash.end);
-    $('#f-end').classList.toggle('field-bad', !!e && e >= clash.start && e <= clash.end);
+    warn.textContent = `❌ Пересечение с «${clash.brand}» (${fmtDate(clash.start)} – ${fmtDate(clash.end)}${buffered ? `; с монтажом/демонтажом ${fmtDate(sp.start)} – ${fmtDate(sp.end)}` : ''}). Выберите другие даты.`;
+    $('#f-start').classList.toggle('field-bad', !!s);
+    $('#f-end').classList.toggle('field-bad', !!e);
     $('#saveP').disabled = true;
   };
-  ['#f-zone', '#f-start', '#f-end'].forEach(sel => {
+  ['#f-zone', '#f-start', '#f-end', '#f-setup', '#f-teardown'].forEach(sel => {
     $(sel).addEventListener('change', checkClash);
     $(sel).addEventListener('input', checkClash);
   });
@@ -1986,17 +2247,25 @@ async function openPlacementForm(pid, preset) {
     if (!start || !end) return toast('Укажите даты начала и окончания', 'err');
     if (end < start) return toast('Дата окончания раньше начала', 'err');
 
-    // Запрет наложения дат на той же зоне (Отказано/Завершено не мешают)
+    const setupDays = Math.max(0, Number($('#f-setup').value) || 0);
+    const teardownDays = Math.max(0, Number($('#f-teardown').value) || 0);
+
+    // Запрет наложения с учётом монтажа/демонтажа (Отказано/Завершено не мешают)
+    const newStart = addDays(start, -setupDays), newEnd = addDays(end, teardownDays);
     const clash = State.placements.find(x => x.zoneId===zoneId && x.id!==pid
-      && x.status!=='rejected' && x.status!=='done' && overlaps(x, start, end));
+      && x.status!=='rejected' && x.status!=='done'
+      && (() => { const sp = occupiedSpan(x); return newStart <= sp.end && newEnd >= sp.start; })());
     if (clash) {
-      toast(`❌ Эти даты уже заняты: «${clash.brand}» (${fmtDate(clash.start)} – ${fmtDate(clash.end)}). Выберите другие даты.`, 'err');
+      const sp = occupiedSpan(clash);
+      const buffered = (sp.start !== clash.start || sp.end !== clash.end);
+      toast(`❌ Пересечение с «${clash.brand}» (${fmtDate(clash.start)} – ${fmtDate(clash.end)}${buffered ? `; с монтажом/демонтажом ${fmtDate(sp.start)} – ${fmtDate(sp.end)}` : ''}). Выберите другие даты.`, 'err');
       return;
     }
 
     const rec = {
       id: pid || uid(),
       zoneId, brand, start, end, color: selColor,
+      setupDays, teardownDays,
       contactPerson: $('#f-contact').value.trim(),
       phone: $('#f-phone').value.trim(),
       email: $('#f-email').value.trim(),
