@@ -846,7 +846,7 @@ function makeBrandLabel(z, st) {
   d.style.marginTop = (r + r * 0.25) + 'px';   // ниже кружка
   d.style.fontSize = fs + 'px';
   d.dataset.zid = z.id;
-  d.innerHTML = `<span class="lcb-name">${esc(st.brand)}</span>`;
+  d.innerHTML = `<span class="lcb-name" style="background:${st.fill};color:#fff">${esc(st.brand)}</span>`;
   return d;
 }
 // Раздвинуть подписи арендаторов по вертикали, чтобы не налезали друг на друга.
@@ -1182,6 +1182,81 @@ function makeMiniCircle(z) {
   c.onclick = (e) => { e.stopPropagation(); openZoneSheet(z.id); };
   return c;
 }
+// Подписи арендаторов на мини-карте обзора этажей (имя бренда под кружком, без наложений)
+function drawMiniBrands(map, floor) {
+  map.querySelectorAll('.lc-brand').forEach(n => n.remove());
+  const labels = [];
+  for (const z of State.zones.filter(z => z.floor === floor && z.mapX != null && z.mapY != null)) {
+    const st = mapCircleStyle(z.id);
+    if (!st.brand) continue;
+    const d = document.createElement('div');
+    d.className = 'lc-brand mini';
+    d.style.left = z.mapX + '%';
+    d.style.top = z.mapY + '%';
+    d.innerHTML = `<span class="lcb-name" style="background:${st.fill};color:#fff">${esc(st.brand)}</span>`;
+    map.appendChild(d);
+    labels.push({ z, el: d });
+  }
+  if (labels.length) requestAnimationFrame(() => resolveMiniBrandOverlaps(map, labels));
+}
+function resolveMiniBrandOverlaps(map, labels) {
+  const rect = map.getBoundingClientRect();
+  const W = rect.width, H = rect.height;
+  if (!W || !H) return;
+  const data = labels.map(it => {
+    const lr = it.el.getBoundingClientRect();
+    return {
+      el: it.el, w: lr.width, h: lr.height,
+      cx: (it.z.mapX / 100) * W,
+      top: (it.z.mapY / 100) * H + (it.z.mapR || DEFAULT_R) * W + 3,  // ниже кружка
+    };
+  });
+  data.sort((a, b) => a.top - b.top);
+  const placed = [];
+  for (const d of data) {
+    placed.sort((a, b) => a.top - b.top);
+    for (const p of placed) {
+      if (Math.abs(d.cx - p.cx) < (d.w + p.w) / 2 + 2 && d.top < p.top + p.h + 2) d.top = p.top + p.h + 2;
+    }
+    placed.push(d);
+  }
+  for (const d of data) { d.el.style.top = (d.top / H * 100) + '%'; d.el.style.transform = 'translateX(-50%)'; }
+}
+// Зум (колесо мыши к курсору) + перетаскивание мини-плана в обзоре этажей
+function bindMiniZoom(map, canvas) {
+  const st = { scale: 1, panX: 0, panY: 0 };
+  const apply = () => { canvas.style.transform = `translate(${st.panX}px,${st.panY}px) scale(${st.scale})`; };
+  const clamp = () => {
+    const w = map.clientWidth, h = map.clientHeight;
+    st.panX = Math.min(0, Math.max(w - w * st.scale, st.panX));
+    st.panY = Math.min(0, Math.max(h - h * st.scale, st.panY));
+  };
+  map.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect = map.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const ns = Math.min(6, Math.max(1, st.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    const k = ns / st.scale;
+    st.panX = mx - (mx - st.panX) * k;
+    st.panY = my - (my - st.panY) * k;
+    st.scale = ns; clamp(); apply();
+  }, { passive: false });
+  let drag = false, sx = 0, sy = 0, px = 0, py = 0;
+  map.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('.loc-circle')) return;   // клик по зоне — открыть лист
+    drag = true; sx = e.clientX; sy = e.clientY; px = st.panX; py = st.panY;
+    map.setPointerCapture(e.pointerId); map.style.cursor = 'grabbing';
+  });
+  map.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    st.panX = px + (e.clientX - sx); st.panY = py + (e.clientY - sy);
+    clamp(); apply();
+  });
+  const end = (e) => { if (drag) { drag = false; map.style.cursor = ''; try { map.releasePointerCapture(e.pointerId); } catch (_) {} } };
+  map.addEventListener('pointerup', end);
+  map.addEventListener('pointercancel', end);
+  map.addEventListener('dblclick', () => { st.scale = 1; st.panX = 0; st.panY = 0; apply(); });  // двойной клик — сброс
+}
 function renderFloorsOverview(v) {
   const head = el('div', 'page-head');
   head.appendChild(el('h2', null, 'Обзор этажей'));
@@ -1199,10 +1274,15 @@ function renderFloorsOverview(v) {
     card.appendChild(el('div', 'floor-card-title', fl ? fl.label : f + ' этаж'));
     const map = el('div', 'mini-map');
     if (fl && fl.plan) {
+      const canvas = el('div', 'mini-canvas');
       const img = el('img', 'mini-plan');
       img.src = fl.plan; img.alt = fl.label; img.draggable = false;
-      map.appendChild(img);
-      for (const z of State.zones.filter(z => z.floor === f && z.mapX != null && z.mapY != null)) map.appendChild(makeMiniCircle(z));
+      img.onload = () => drawMiniBrands(canvas, f);   // пересчитать, когда известна высота
+      canvas.appendChild(img);
+      for (const z of State.zones.filter(z => z.floor === f && z.mapX != null && z.mapY != null)) canvas.appendChild(makeMiniCircle(z));
+      map.appendChild(canvas);
+      drawMiniBrands(canvas, f);   // подписи арендаторов рядом с зонами
+      bindMiniZoom(map, canvas);   // зум колесом + перетаскивание, как на плане этажей
     } else {
       map.appendChild(el('div', 'tk-empty', 'План недоступен'));
     }
@@ -1334,7 +1414,7 @@ function renderBooking(v) {
 }
 
 /* ───────── Девочка, скачущая по зонам (декоративная анимация) ───────── */
-let _charTimer = null, _charEl = null, _charPos = { r: 0, c: 0, dir: 1 };
+let _charTimer = null, _charEl = null, _charPos = { r: 0, c: 0, dir: 1 }, _charRelease = null;
 // Девочка с руками за спиной (ходит, думает)
 const GIRL_SVG = `<svg class="girl walking" viewBox="0 0 60 92" width="44" height="68" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
   <defs><linearGradient id="grlDress" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff8fc0"/><stop offset="1" stop-color="#e0509a"/></linearGradient>
@@ -1355,6 +1435,7 @@ const GIRL_SVG = `<svg class="girl walking" viewBox="0 0 60 92" width="44" heigh
 </svg>`;
 function stopChar() {
   if (_charTimer) { clearTimeout(_charTimer); _charTimer = null; }
+  if (_charRelease) { window.removeEventListener('pointerup', _charRelease); window.removeEventListener('pointercancel', _charRelease); _charRelease = null; }
   if (_charEl) { _charEl.remove(); _charEl = null; }
 }
 function charRows() {
@@ -1372,6 +1453,27 @@ function startChar() {
   const girl = wrap.querySelector('.girl');
   const face = wrap.querySelector('.girl-face');
   _charPos = { r: 0, c: 0, dir: 1 };
+
+  // Нажать на девочку — увеличить в 3 раза (стоит на месте); отпустить — уменьшить и бежать дальше
+  let _held = false;
+  const grab = (e) => {
+    e.preventDefault();
+    _held = true;
+    if (_charTimer) { clearTimeout(_charTimer); _charTimer = null; }
+    wrap.classList.remove('show-bubble');
+    girl.setAttribute('class', 'girl');     // остановить ходьбу, пока держим
+    face.classList.add('grown');
+  };
+  _charRelease = () => {
+    if (!_held) return;
+    _held = false;
+    face.classList.remove('grown');
+    girl.setAttribute('class', 'girl walking');
+    _charTimer = setTimeout(step, 350);     // продолжить движение
+  };
+  face.addEventListener('pointerdown', grab);
+  window.addEventListener('pointerup', _charRelease);
+  window.addEventListener('pointercancel', _charRelease);
   const placeAt = (pill, instant) => {
     const r = pill.getBoundingClientRect();
     if (instant) wrap.style.transition = 'none';
@@ -1408,7 +1510,7 @@ function startChar() {
     _charPos = { r, c: nc, dir };
     const pill = rws[r][nc];
 
-    face.classList.toggle('flip', dir < 0);           // повернуться по ходу движения
+    face.style.setProperty('--flip', dir < 0 ? -1 : 1);   // повернуться по ходу движения
     const dur = levelJump ? 1.3 : 1.7;                // не спеша
     wrap.style.transition = `left ${dur}s ease-in-out, top ${dur}s ease-in-out`;
     girl.setAttribute('class', 'girl ' + (levelJump ? 'jumping' : 'walking'));
@@ -1444,27 +1546,63 @@ const SAFE_SVG = `<svg class="safe-svg" viewBox="0 0 100 100" width="82" height=
   <rect x="15" y="88" width="9" height="7" rx="2" fill="#69737f"/>
   <rect x="76" y="88" width="9" height="7" rx="2" fill="#69737f"/>
 </svg>`;
-const BASKET_TITLES = { done: 'Завершено', current: 'Текущие', future: 'Будущие поступления', total: 'Итого накопительно' };
+// Золотая монета ($) для горки в мешке — наклонный диск с толщиной и знаком доллара.
+function _coin(cx, cy, rot, r) {
+  const ry = (r * 0.64).toFixed(2);
+  const s = (r / 9).toFixed(3);
+  return `<g transform="translate(${cx} ${cy}) rotate(${rot})">`
+    + `<ellipse cy="${(r * 0.32).toFixed(2)}" rx="${r}" ry="${ry}" fill="url(#coinEdge)"/>`
+    + `<ellipse rx="${r}" ry="${ry}" fill="url(#coinFace)" stroke="#c2820a" stroke-width="0.5"/>`
+    + `<g transform="scale(${s})" stroke="#bb7c08" stroke-width="1.4" fill="none" stroke-linecap="round" opacity=".7">`
+    + `<path d="M2.6 -2.7 q-4.6 -1 -4.6 2.1 q0 2.6 4.5 2.8 q4.5 0.2 4.5 2.8 q0 3.1 -4.7 2"/>`
+    + `<line x1="0" y1="-5.2" x2="0" y2="5.6"/></g></g>`;
+}
+const _coinsPile =
+  _coin(33, 34, -20, 7.5) + _coin(68, 34, 20, 7.5) +
+  _coin(41, 36, -8, 8) + _coin(60, 36, 9, 8) +
+  _coin(50, 38, 0, 8.5) +
+  _coin(44, 30, -13, 8) + _coin(57, 29, 13, 8) +
+  _coin(50, 25, 3, 8);
 
-// Плетёная корзина — встроенный SVG, чтобы вид был одинаковым на всех устройствах
-// (эмодзи 🧺 Apple рисует с бельём, Windows/Android — пустую плетёнку). Размер в
-// em → наследует адаптивный font-size из .bk3-ic.
-const BASKET_SVG = `<svg class="basket-svg" viewBox="0 0 100 100" width="1.12em" height="1.12em" xmlns="http://www.w3.org/2000/svg">
+// Коричневый денежный мешок с горкой золотых $-монет (как на референсе).
+// Полностью векторный (inline SVG) — выглядит одинаково на любом компьютере.
+const MONEYBAG_SVG = `<svg class="bag-svg" viewBox="0 0 100 100" width="84" height="84" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bkWeave" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#e3a85c"/><stop offset="1" stop-color="#a3641f"/>
+    <linearGradient id="bagBody" x1="0.12" y1="0.05" x2="0.92" y2="1">
+      <stop offset="0" stop-color="#a3713f"/><stop offset="0.5" stop-color="#7d4f2b"/><stop offset="1" stop-color="#5b3719"/>
     </linearGradient>
-    <clipPath id="bkBody"><path d="M20 42 L80 42 L69 84 Q67 87 63 87 L37 87 Q33 87 31 84 Z"/></clipPath>
+    <radialGradient id="bagMouth" cx="0.5" cy="0.45" r="0.62">
+      <stop offset="0" stop-color="#33200f"/><stop offset="1" stop-color="#5a3a1f"/>
+    </radialGradient>
+    <linearGradient id="coinFace" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe98a"/><stop offset="0.5" stop-color="#ffc931"/><stop offset="1" stop-color="#e2980f"/>
+    </linearGradient>
+    <linearGradient id="coinEdge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d9930c"/><stop offset="1" stop-color="#a96d08"/>
+    </linearGradient>
   </defs>
-  <path d="M20 42 L80 42 L69 84 Q67 87 63 87 L37 87 Q33 87 31 84 Z" fill="url(#bkWeave)" stroke="#7e4d1c" stroke-width="2"/>
-  <g clip-path="url(#bkBody)" stroke="#7e4d1c" stroke-width="1.5" opacity="0.5" fill="none">
-    <path d="M32 42 L35 87"/><path d="M43 42 L44 87"/><path d="M54 42 L53 87"/><path d="M65 42 L62 87"/><path d="M75 42 L69 87"/>
-    <path d="M20 54 Q50 58 80 54"/><path d="M22 66 Q50 70 78 66"/><path d="M26 78 Q50 82 74 78"/>
-  </g>
-  <ellipse cx="50" cy="42" rx="31" ry="7" fill="#5e3914"/>
-  <ellipse cx="50" cy="41" rx="31" ry="6.6" fill="none" stroke="#c9883f" stroke-width="3.4"/>
-  <ellipse cx="50" cy="41" rx="31" ry="6.6" fill="none" stroke="#8a531f" stroke-width="1.2"/>
+  <!-- тень на полу -->
+  <ellipse cx="50" cy="92" rx="37" ry="5" fill="#16324a" opacity=".10"/>
+  <!-- тело мешка -->
+  <path d="M22 38 C 15 49, 12 65, 18 79 C 23 90, 37 93, 50 93 C 63 93, 77 90, 82 79 C 88 65, 85 49, 78 38 C 70 33, 60 40, 50 40 C 40 40, 30 33, 22 38 Z" fill="url(#bagBody)" stroke="#4a2d16" stroke-width="0.8"/>
+  <!-- складка-перетяжка по середине -->
+  <path d="M17 57 Q50 49 83 57" fill="none" stroke="#3f2712" stroke-width="2.6" opacity=".45" stroke-linecap="round"/>
+  <path d="M19 54 Q50 47 81 54" fill="none" stroke="#b3814f" stroke-width="1.5" opacity=".4" stroke-linecap="round"/>
+  <!-- вертикальный шов справа -->
+  <path d="M75 42 Q81 64 73 87" fill="none" stroke="#3f2712" stroke-width="1.3" opacity=".5" stroke-linecap="round"/>
+  <!-- мягкий блик слева -->
+  <path d="M29 50 Q23 67 30 83" fill="none" stroke="#bb8a55" stroke-width="4.5" opacity=".3" stroke-linecap="round"/>
+  <!-- тёмная горловина -->
+  <ellipse cx="50" cy="37" rx="26" ry="9" fill="url(#bagMouth)"/>
+  <!-- дальний край горловины (за монетами) -->
+  <path d="M24 38 Q50 22 76 38" fill="none" stroke="#7d4f2b" stroke-width="5.5" stroke-linecap="round"/>
+  <!-- горка золотых монет -->
+  ${_coinsPile}
+  <!-- ближний отворот горловины (перед монетами) -->
+  <path d="M21 38 Q50 52 79 38 Q75 47 50 48 Q25 47 21 38 Z" fill="url(#bagBody)" stroke="#4a2d16" stroke-width="0.6"/>
+  <path d="M24 40 Q50 50 76 40" fill="none" stroke="#b3814f" stroke-width="1.2" opacity=".4" stroke-linecap="round"/>
 </svg>`;
+const BASKET_TITLES = { done: 'Завершено', current: 'Текущие', future: 'Будущие поступления', total: 'Итого накопительно' };
 
 // Список размещений, относящихся к корзинке (для окна с информацией)
 function basketList(key) {
@@ -1499,7 +1637,7 @@ function openBasketInfo(key) {
     </tr>`;
   }).join('');
   openModal(`
-    <div class="modal-head"><h3>${key === 'total' ? '🔒' : BASKET_SVG} ${BASKET_TITLES[key]} · ${fmtUsd(total)}</h3><button class="modal-close" data-close>×</button></div>
+    <div class="modal-head"><h3>${key === 'total' ? '🔒' : '💰'} ${BASKET_TITLES[key]} · ${fmtUsd(total)}</h3><button class="modal-close" data-close>×</button></div>
     <div class="modal-body">
       ${list.length ? `<table class="basket-info">
         <thead><tr><th>Зона</th><th>Арендатор</th><th>Начало</th><th>Окончание</th><th>Статус</th><th>Сумма</th></tr></thead>
@@ -1546,7 +1684,7 @@ function startMoneyRain(container) {
     .reduce((s, p) => s + placementMoney(p).totalAgreed, 0);
   if (!doneSum && !busyCurrentSum && !busyExpiredSum && !futureSum) return;
 
-  const mk = (sum, cap, cls) => `<div class="bk3 ${cls}"><div class="bk3-sum">${fmtUsd(sum)}</div><div class="bk3-ic">${BASKET_SVG}</div><div class="bk3-cap">${cap}</div></div>`;
+  const mk = (sum, cap, cls) => `<div class="bk3 ${cls}"><div class="bk3-sum">${fmtUsd(sum)}</div><div class="bk-bag">${MONEYBAG_SVG}</div><div class="bk3-cap">${cap}</div></div>`;
   const mkSafe = (sum, cap, cls) => `<div class="bk3 ${cls}"><div class="bk3-sum">${fmtUsd(sum)}</div><div class="bk-safe">${SAFE_SVG}</div><div class="bk3-cap">${cap}</div></div>`;
   const bar = el('div', 'baskets-bar');
   bar.innerHTML =
@@ -1561,9 +1699,8 @@ function startMoneyRain(container) {
   const bCurrent = bar.querySelector('.bk-current');
   const bFuture = bar.querySelector('.bk-future');
   const bTotal = bar.querySelector('.bk-total');
-  const safeEl = bTotal ? bTotal.querySelector('.bk-safe') : null;
 
-  // Клик по корзинке/сейфу — окно с информацией
+  // Клик по мешку/сейфу — окно с информацией
   if (bDone) bDone.onclick = () => openBasketInfo('done');
   if (bCurrent) bCurrent.onclick = () => openBasketInfo('current');
   if (bFuture) bFuture.onclick = () => openBasketInfo('future');
@@ -1571,12 +1708,12 @@ function startMoneyRain(container) {
 
   const bounce = (elm) => { if (!elm) return; elm.classList.remove('bk3-bounce'); void elm.offsetWidth; elm.classList.add('bk3-bounce'); };
   const swell = (elm) => { if (!elm) return; elm.classList.remove('swell'); void elm.offsetWidth; elm.classList.add('swell'); };
-  const flyDollar = (fromRect, toRect, slow, onLand) => {
+  const flyDollar = (fromRect, toRect, onLand, slow) => {
     if (!fromRect.width || !toRect.width) return;
-    const startX = fromRect.left + window.scrollX + (slow ? fromRect.width / 2 - 8 : Math.random() * Math.max(fromRect.width - 10, 10));
-    const startY = fromRect.top + window.scrollY + fromRect.height * (slow ? 0.55 : 0.3);
+    const startX = fromRect.left + window.scrollX + Math.random() * Math.max(fromRect.width - 10, 10);
+    const startY = fromRect.top + window.scrollY + fromRect.height * 0.3;
     const endX = toRect.left + window.scrollX + toRect.width / 2 - 10;
-    const endY = toRect.top + window.scrollY + toRect.height * (slow ? 0.5 : 0.6);
+    const endY = toRect.top + window.scrollY + toRect.height * 0.42;
     const d = document.createElement('span');
     d.className = 'bk-dollar' + (slow ? ' slow' : '');
     d.textContent = '$';
@@ -1587,26 +1724,33 @@ function startMoneyRain(container) {
     document.body.appendChild(d);
     setTimeout(() => { d.remove(); if (onLand) onLand(); }, slow ? 2900 : 1500);
   };
+  const safeEl = bTotal ? bTotal.querySelector('.bk-safe') : null;
 
-  // 1) $ летят из активных зон (Подтверждено + сегодня внутри дат) в «Текущие»
-  _rainTimer = setInterval(() => {
-    const active = State.placements.filter(p => p.status === 'busy' && isActiveToday(p));
-    if (!active.length || !bCurrent) return;
-    const p = active[Math.floor(Math.random() * active.length)];
-    const pill = document.querySelector(`.bk-pill[data-p="${p.id}"]`);
-    if (!pill) return;
-    flyDollar(pill.getBoundingClientRect(), bCurrent.getBoundingClientRect(), false, () => bounce(bCurrent));
-  }, 1800);
+  // 1) $ падают из активных зон только в мешок «Текущие»; мешок подпрыгивает.
+  if (busyCurrentSum > 0 && bCurrent) {
+    _rainTimer = setInterval(() => {
+      const toRect = bCurrent.getBoundingClientRect();
+      if (!toRect.width) return;
+      let fromRect;
+      const active = State.placements.filter(p => p.status === 'busy' && isActiveToday(p));
+      if (active.length) {
+        const p = active[Math.floor(Math.random() * active.length)];
+        const pill = document.querySelector(`.bk-pill[data-p="${p.id}"]`);
+        if (pill) fromRect = pill.getBoundingClientRect();
+      }
+      if (!fromRect || !fromRect.width) fromRect = { left: toRect.left + toRect.width / 2 - 10, top: toRect.top - 95, width: 20, height: 20 };
+      flyDollar(fromRect, toRect, () => bounce(bCurrent));
+    }, 1300);
+  }
 
-  // 2) $ медленно капают из «Завершено» и «Текущие» в «Итого накопительно»
-  const totalSources = [];
-  if (doneSum > 0) totalSources.push(bDone);
-  if (busyCurrentSum > 0) totalSources.push(bCurrent);
-  if (totalSources.length && bTotal) {
+  // 2) $ медленно перетекают из «Завершено» и «Текущие» в сейф «Итого»; сейф раздувается.
+  const safeSources = [];
+  if (doneSum > 0 && bDone) safeSources.push(bDone);
+  if (busyCurrentSum > 0 && bCurrent) safeSources.push(bCurrent);
+  if (safeSources.length && bTotal) {
     _rainTimer2 = setInterval(() => {
-      const src = totalSources[Math.floor(Math.random() * totalSources.length)];
-      if (!src) return;
-      flyDollar(src.getBoundingClientRect(), bTotal.getBoundingClientRect(), true, () => swell(safeEl));
+      const src = safeSources[Math.floor(Math.random() * safeSources.length)];
+      flyDollar(src.getBoundingClientRect(), bTotal.getBoundingClientRect(), () => swell(safeEl), true);
     }, 3000);
   }
 }
