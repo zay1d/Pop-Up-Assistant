@@ -540,6 +540,8 @@ main#view{padding:26px 22px 60px;max-width:1500px;margin:0 auto}
   100%{transform:scale(1)}
 }
 .bk3-ic{font-size:58px;line-height:1;filter:drop-shadow(0 5px 7px rgba(0,0,0,.22))}
+.bk3-ic .basket-svg{display:block}
+.modal-head h3 .basket-svg{vertical-align:-0.18em}
 .bk3-sum{font-weight:800;font-size:15px;padding:6px 16px;border-radius:20px;white-space:nowrap;
   color:#6b4a12;background:linear-gradient(180deg,#ffdf7e,#eaad12);
   box-shadow:var(--shadow-lg);border:1px solid #d99e0a}

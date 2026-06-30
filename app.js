@@ -1446,6 +1446,26 @@ const SAFE_SVG = `<svg class="safe-svg" viewBox="0 0 100 100" width="82" height=
 </svg>`;
 const BASKET_TITLES = { done: 'Завершено', current: 'Текущие', future: 'Будущие поступления', total: 'Итого накопительно' };
 
+// Плетёная корзина — встроенный SVG, чтобы вид был одинаковым на всех устройствах
+// (эмодзи 🧺 Apple рисует с бельём, Windows/Android — пустую плетёнку). Размер в
+// em → наследует адаптивный font-size из .bk3-ic.
+const BASKET_SVG = `<svg class="basket-svg" viewBox="0 0 100 100" width="1.12em" height="1.12em" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bkWeave" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e3a85c"/><stop offset="1" stop-color="#a3641f"/>
+    </linearGradient>
+    <clipPath id="bkBody"><path d="M20 42 L80 42 L69 84 Q67 87 63 87 L37 87 Q33 87 31 84 Z"/></clipPath>
+  </defs>
+  <path d="M20 42 L80 42 L69 84 Q67 87 63 87 L37 87 Q33 87 31 84 Z" fill="url(#bkWeave)" stroke="#7e4d1c" stroke-width="2"/>
+  <g clip-path="url(#bkBody)" stroke="#7e4d1c" stroke-width="1.5" opacity="0.5" fill="none">
+    <path d="M32 42 L35 87"/><path d="M43 42 L44 87"/><path d="M54 42 L53 87"/><path d="M65 42 L62 87"/><path d="M75 42 L69 87"/>
+    <path d="M20 54 Q50 58 80 54"/><path d="M22 66 Q50 70 78 66"/><path d="M26 78 Q50 82 74 78"/>
+  </g>
+  <ellipse cx="50" cy="42" rx="31" ry="7" fill="#5e3914"/>
+  <ellipse cx="50" cy="41" rx="31" ry="6.6" fill="none" stroke="#c9883f" stroke-width="3.4"/>
+  <ellipse cx="50" cy="41" rx="31" ry="6.6" fill="none" stroke="#8a531f" stroke-width="1.2"/>
+</svg>`;
+
 // Список размещений, относящихся к корзинке (для окна с информацией)
 function basketList(key) {
   const today = todayStr();
@@ -1479,7 +1499,7 @@ function openBasketInfo(key) {
     </tr>`;
   }).join('');
   openModal(`
-    <div class="modal-head"><h3>${key === 'total' ? '🔒' : '🧺'} ${BASKET_TITLES[key]} · ${fmtUsd(total)}</h3><button class="modal-close" data-close>×</button></div>
+    <div class="modal-head"><h3>${key === 'total' ? '🔒' : BASKET_SVG} ${BASKET_TITLES[key]} · ${fmtUsd(total)}</h3><button class="modal-close" data-close>×</button></div>
     <div class="modal-body">
       ${list.length ? `<table class="basket-info">
         <thead><tr><th>Зона</th><th>Арендатор</th><th>Начало</th><th>Окончание</th><th>Статус</th><th>Сумма</th></tr></thead>
@@ -1526,7 +1546,7 @@ function startMoneyRain(container) {
     .reduce((s, p) => s + placementMoney(p).totalAgreed, 0);
   if (!doneSum && !busyCurrentSum && !busyExpiredSum && !futureSum) return;
 
-  const mk = (sum, cap, cls) => `<div class="bk3 ${cls}"><div class="bk3-sum">${fmtUsd(sum)}</div><div class="bk3-ic">🧺</div><div class="bk3-cap">${cap}</div></div>`;
+  const mk = (sum, cap, cls) => `<div class="bk3 ${cls}"><div class="bk3-sum">${fmtUsd(sum)}</div><div class="bk3-ic">${BASKET_SVG}</div><div class="bk3-cap">${cap}</div></div>`;
   const mkSafe = (sum, cap, cls) => `<div class="bk3 ${cls}"><div class="bk3-sum">${fmtUsd(sum)}</div><div class="bk-safe">${SAFE_SVG}</div><div class="bk3-cap">${cap}</div></div>`;
   const bar = el('div', 'baskets-bar');
   bar.innerHTML =
