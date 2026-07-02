@@ -134,7 +134,36 @@ function placementMoney(p) {
   const totalBase = dayRate * days;
   const manual = (p.manualCost != null && p.manualCost !== '');  // ручная стоимость задана
   const totalAgreed = manual ? (Number(p.manualCost) || 0) : Math.round(totalBase * (1 - discount / 100));
-  return { dayRate, days, discount, totalBase, totalAgreed, manual, area: Number(p.area) || 0 };
+  const perDay = days ? totalAgreed / days : 0;   // стоимость аренды в день = общая ÷ дни
+  return { dayRate, days, discount, totalBase, totalAgreed, manual, area: Number(p.area) || 0, perDay };
+}
+
+// Разбивка брони по дням: сколько уже заработано (по прошедшим дням) и сколько осталось.
+// Считаем только подтверждённые/завершённые брони. «Завершено» — по дате окончания.
+// Сегодняшний день считается уже заработанным (входит в earnedDays).
+function isMoneyPlacement(p) { return p.status === 'busy' || p.status === 'done'; }
+function placementSplit(p) {
+  const total = placementMoney(p).totalAgreed;
+  const days = Math.max(1, (p.start && p.end) ? diffDaysIncl(p.start, p.end) : 1);
+  const perDay = total / days;
+  const t = todayStr();
+  if (p.end < t) return { total, days, perDay, earnedDays: days, earned: total, remaining: 0, bucket: 'done' };
+  if (p.start > t) return { total, days, perDay, earnedDays: 0, earned: 0, remaining: total, bucket: 'future' };
+  const earnedDays = Math.min(days, Math.max(0, diffDaysIncl(p.start, t)));   // сегодня входит
+  const earned = Math.round(total * earnedDays / days);
+  return { total, days, perDay, earnedDays, earned, remaining: total - earned, bucket: 'active' };
+}
+// Суммы по мешкам с учётом дневного дохода.
+function moneyBuckets() {
+  let done = 0, current = 0, future = 0;
+  for (const p of State.placements) {
+    if (!isMoneyPlacement(p)) continue;
+    const s = placementSplit(p);
+    if (s.bucket === 'done') done += s.total;
+    else if (s.bucket === 'future') future += s.total;
+    else { current += s.earned; future += s.remaining; }
+  }
+  return { done, current, future, total: done + current };
 }
 
 function statusInfo(key) { return CONTRACT_STATUSES.find(s => s.key === key) || CONTRACT_STATUSES[0]; }
@@ -327,6 +356,7 @@ const NAV = [
   { key: 'tasks', label: 'Мои задачи' },
   { key: 'history', label: 'История' },
   { key: 'dashboard', label: 'Дашборд' },
+  { key: 'summary', label: 'Сводка' },
 ];
 
 function renderNav() {
@@ -355,6 +385,7 @@ async function go(view, opts) {
   else if (view === 'tasks') renderTasks(v);
   else if (view === 'history') renderHistory(v);
   else if (view === 'dashboard') renderDashboard(v);
+  else if (view === 'summary') renderSummary(v);
   window.scrollTo(0, 0);
 }
 
@@ -386,6 +417,7 @@ function renderHome(v) {
     { key:'tenants', icon:'🏷️', t:'Арендаторы', d:'Все pop-up, карточки с фото, файлами и историей.' },
     { key:'tasks', icon:'✅', t:'Мои задачи', d:'Все задачи по арендаторам в одном месте: комментарии, файлы, отметки.' },
     { key:'dashboard', icon:'📊', t:'Дашборд', d:'Ключевые показатели, динамика и загрузка по этажам.' },
+    { key:'summary', icon:'📋', t:'Сводка', d:'Отчёт для руководства: все брони от старых к новым одной таблицей.' },
     { key:'map', icon:'🗺️', t:'План этажей', d:'План этажа с точками-зонами: что свободно, что занято.' },
     { key:'history', icon:'🕘', t:'История', d:'Бронирования по зонам и по арендаторам.' },
     { key:'_backup', icon:'⤓', t:'Сохранение данных', d:'Резервная копия и перенос на другой компьютер.' },
@@ -929,6 +961,9 @@ function addZonePrompt() {
           <input id="nz-code" placeholder="Например, L1.13"></div>
         <div class="field"><label>Название локации *</label>
           <input id="nz-name" placeholder="Например, Зона у входа"></div>
+        <div class="field"><label>Стоимость за день ($)</label>
+          <input id="nz-rate" type="number" min="0" placeholder="Например, 3000">
+          <div class="hint">используется в расчётах стоимости аренды</div></div>
       </div>
     </div>
     <div class="modal-foot">
@@ -939,11 +974,12 @@ function addZonePrompt() {
   const save = async () => {
     const code = $('#nz-code').value.trim();
     const name = $('#nz-name').value.trim();
+    const dayRate = Math.max(0, Number($('#nz-rate').value) || 0);
     if (!code) return toast('Введите код локации', 'err');
     if (!name) return toast('Введите название локации', 'err');
     if (State.zones.some(z => (z.code || '').toLowerCase() === code.toLowerCase()))
       return toast('Локация с таким кодом уже есть', 'err');
-    await dbPut('zones', { id: 'zc' + uid(), name, floor: State.floor, code, dayRate: 0, mapX: null, mapY: null, custom: true });
+    await dbPut('zones', { id: 'zc' + uid(), name, floor: State.floor, code, dayRate, mapX: null, mapY: null, custom: true });
     State.zones = (await dbGetAll('zones')).sort((a, b) => (a.floor - b.floor) || a.name.localeCompare(b.name, 'ru'));
     closeModal();
     toast('Локация добавлена', 'ok');
@@ -1604,44 +1640,46 @@ const MONEYBAG_SVG = `<svg class="bag-svg" viewBox="0 0 100 100" width="84" heig
 </svg>`;
 const BASKET_TITLES = { done: 'Завершено', current: 'Текущие', future: 'Будущие поступления', total: 'Итого накопительно' };
 
-// Список размещений, относящихся к корзинке (для окна с информацией)
-function basketList(key) {
-  const today = todayStr();
-  const yr = String(new Date().getFullYear());
-  const inYear = p => (p.end || '').slice(0, 4) === yr;
-  let ps;
-  if (key === 'done') ps = State.placements.filter(p => p.status === 'done' && inYear(p));
-  else if (key === 'current') ps = State.placements.filter(p => p.status === 'busy' && isActiveToday(p));
-  else if (key === 'future') ps = State.placements.filter(p => p.status !== 'rejected' && p.start > today);
-  else ps = State.placements.filter(p =>
-    (p.status === 'done' && inYear(p)) ||
-    (p.status === 'busy' && isActiveToday(p)) ||
-    (p.status === 'busy' && p.end < today && inYear(p)));
-  return ps.sort((a, b) => (a.start || '').localeCompare(b.start || ''));
+// Строки для окна мешка: какие брони и с какой суммой попадают в этот мешок (по дневной модели).
+function basketRows(key) {
+  const rows = [];
+  for (const p of State.placements) {
+    if (!isMoneyPlacement(p)) continue;
+    const sp = placementSplit(p);
+    if (key === 'done') { if (sp.bucket === 'done') rows.push({ p, sp, amount: sp.total }); }
+    else if (key === 'current') { if (sp.bucket === 'active') rows.push({ p, sp, amount: sp.earned }); }
+    else if (key === 'future') {
+      if (sp.bucket === 'future') rows.push({ p, sp, amount: sp.total });
+      else if (sp.bucket === 'active' && sp.remaining > 0) rows.push({ p, sp, amount: sp.remaining });
+    } else { // total
+      if (sp.bucket === 'done') rows.push({ p, sp, amount: sp.total });
+      else if (sp.bucket === 'active') rows.push({ p, sp, amount: sp.earned });
+    }
+  }
+  return rows.sort((a, b) => (a.p.start || '').localeCompare(b.p.start || ''));
 }
 
-// Окно с информацией по корзинке/сейфу: Зона · Арендатор · Даты · Статус · Сумма
+// Окно с информацией по мешку/сейфу: Зона · Арендатор · Период · В день · Дней · Сумма
 function openBasketInfo(key) {
-  const list = basketList(key);
-  const total = list.reduce((s, p) => s + placementMoney(p).totalAgreed, 0);
-  const rows = list.map(p => {
+  const rows = basketRows(key);
+  const total = rows.reduce((s, r) => s + r.amount, 0);
+  const body = rows.map(({ p, sp, amount }) => {
     const z = zoneById(p.zoneId);
-    const si = statusInfo(p.status);
     return `<tr>
       <td>${esc(z ? (z.code + ' · ' + z.name) : '—')}</td>
       <td><b>${esc(p.brand || '—')}</b></td>
-      <td>${fmtDate(p.start)}</td>
-      <td>${fmtDate(p.end)}</td>
-      <td><span class="bi-status" style="background:${si.color}22;color:${si.color}">${si.label}</span></td>
-      <td class="bi-sum">${fmtUsd(placementMoney(p).totalAgreed)}</td>
+      <td>${fmtDate(p.start)} – ${fmtDate(p.end)}</td>
+      <td>${fmtUsd(Math.round(sp.perDay))}</td>
+      <td>${sp.earnedDays}/${sp.days}</td>
+      <td class="bi-sum">${fmtUsd(amount)}</td>
     </tr>`;
   }).join('');
   openModal(`
     <div class="modal-head"><h3>${key === 'total' ? '🔒' : '💰'} ${BASKET_TITLES[key]} · ${fmtUsd(total)}</h3><button class="modal-close" data-close>×</button></div>
     <div class="modal-body">
-      ${list.length ? `<table class="basket-info">
-        <thead><tr><th>Зона</th><th>Арендатор</th><th>Начало</th><th>Окончание</th><th>Статус</th><th>Сумма</th></tr></thead>
-        <tbody>${rows}</tbody>
+      ${rows.length ? `<table class="basket-info">
+        <thead><tr><th>Зона</th><th>Арендатор</th><th>Период</th><th>В день</th><th>Дней</th><th>Сумма</th></tr></thead>
+        <tbody>${body}</tbody>
         <tfoot><tr><td colspan="5">Итого</td><td class="bi-sum">${fmtUsd(total)}</td></tr></tfoot>
       </table>` : `<div class="muted" style="text-align:center;padding:26px">Пока пусто</div>`}
     </div>
@@ -1665,24 +1703,11 @@ function stopMoneyRain() {
 }
 function startMoneyRain(container) {
   stopMoneyRain();
-  const year = new Date().getFullYear();
-  const yStart = `${year}-01-01`, yEnd = `${year}-12-31`;
-  const today = todayStr();
-  const doneSum = doneTotalUsd(year);
-  // Текущие: Подтверждено И аренда идёт прямо сейчас (start ≤ today ≤ end)
-  const busyCurrentSum = State.placements
-    .filter(p => p.status === 'busy' && isActiveToday(p))
-    .reduce((s, p) => s + placementMoney(p).totalAgreed, 0);
-  // Завершённые busy: Подтверждено, но срок уже истёк (end < today) — идут в Итого
-  const busyExpiredSum = State.placements
-    .filter(p => p.status === 'busy' && p.end < today && overlaps(p, yStart, yEnd))
-    .reduce((s, p) => s + placementMoney(p).totalAgreed, 0);
-  const itogo = doneSum + busyCurrentSum + busyExpiredSum;
-  // Будущие поступления: любой статус кроме «Отказано», дата начала ещё впереди (start > today)
-  const futureSum = State.placements
-    .filter(p => p.status !== 'rejected' && p.start > today)
-    .reduce((s, p) => s + placementMoney(p).totalAgreed, 0);
-  if (!doneSum && !busyCurrentSum && !busyExpiredSum && !futureSum) return;
+  // Суммы по дневной модели: Завершено (полностью прошедшие) · Текущие (заработано на сегодня) ·
+  // Будущие (ещё не заработанный остаток) · Итого (Завершено + Текущие).
+  const bk = moneyBuckets();
+  const doneSum = bk.done, busyCurrentSum = bk.current, futureSum = bk.future, itogo = bk.total;
+  if (!doneSum && !busyCurrentSum && !futureSum) return;
 
   const mk = (sum, cap, cls) => `<div class="bk3 ${cls}"><div class="bk3-sum">${fmtUsd(sum)}</div><div class="bk-bag">${MONEYBAG_SVG}</div><div class="bk3-cap">${cap}</div></div>`;
   const mkSafe = (sum, cap, cls) => `<div class="bk3 ${cls}"><div class="bk3-sum">${fmtUsd(sum)}</div><div class="bk-safe">${SAFE_SVG}</div><div class="bk3-cap">${cap}</div></div>`;
@@ -1877,6 +1902,11 @@ async function openPlacementCard(pid) {
           <tr><td class="k">Стоимость без скидки</td><td>${fmtUsd(m.totalBase)}</td></tr>
           <tr><td class="k">Скидка</td><td>${m.manual ? '—' : (m.discount ? m.discount + ' %' : '—')}</td></tr>
           <tr><td class="k">К оплате (аренда)</td><td><b style="color:var(--green)">${fmtUsd(m.totalAgreed)}</b>${m.manual ? ' <span class="muted">(вручную)</span>' : ''}</td></tr>
+          <tr><td class="k">Стоимость аренды в день</td><td><b>${fmtUsd(Math.round(m.perDay))}</b> <span class="muted">(итог ÷ ${m.days || 0} дн.)</span></td></tr>
+          <tr><td class="k">Стоимость в месяц</td><td><b>${fmtUsd(Math.round(m.perDay) * 30)}</b> <span class="muted">(в день × 30)</span></td></tr>
+          ${isMoneyPlacement(p) ? (() => { const sp = placementSplit(p); return `
+          <tr><td class="k">Заработано на сегодня</td><td><b style="color:var(--green)">${fmtUsd(sp.earned)}</b> <span class="muted">(${sp.earnedDays} из ${sp.days} дн.)</span></td></tr>
+          <tr><td class="k">Остаток (в будущее)</td><td>${fmtUsd(sp.remaining)}</td></tr>`; })() : ''}
           <tr><td class="k">Подрядчик по изготовлению</td><td>${esc(p.contractor)||'—'}</td></tr>
           <tr><td class="k">Стоимость изготовления</td><td>${fmtMoney(p.costMake)}</td></tr>
           <tr><td class="k">Статус</td><td><span class="badge" style="background:${st.color}"><span class="dot"></span>${st.label}</span></td></tr>
@@ -2332,11 +2362,14 @@ async function openPlacementForm(pid, preset) {
     $('#f-manual').disabled = !manualOn;
     $('#f-discount').disabled = manualOn;
     const totalAgreed = manualOn ? (Number($('#f-manual').value) || 0) : Math.round(totalBase * (1 - disc / 100));
+    const perDay = days ? Math.round(totalAgreed / days) : 0;
     $('#f-totals').innerHTML =
       `<span>Дней: <b>${days}</b></span>` +
       `<span>Без скидки: <b>${fmtUsd(totalBase)}</b></span>` +
       `<span>Скидка: <b>${manualOn ? '—' : disc + '%'}</b></span>` +
-      `<span>К оплате: <b style="color:var(--green)">${fmtUsd(totalAgreed)}</b>${manualOn ? ' (вручную)' : ''}</span>`;
+      `<span>К оплате: <b style="color:var(--green)">${fmtUsd(totalAgreed)}</b>${manualOn ? ' (вручную)' : ''}</span>` +
+      `<span>Стоимость в день: <b>${fmtUsd(perDay)}</b></span>` +
+      `<span>Стоимость в месяц: <b>${fmtUsd(perDay * 30)}</b></span>`;
   };
   ['#f-zone', '#f-start', '#f-end', '#f-discount', '#f-manual', '#f-manual-on'].forEach(sel => {
     const ev = (sel === '#f-zone' || sel === '#f-manual-on') ? 'change' : 'input';
@@ -2593,6 +2626,59 @@ function overlapDays(p, a, b) { // дни пересечения размеще�
 }
 const MON_SHORT = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
 
+/* ═══════════════════════════════════════════════════════════════
+   СВОДКА — отчёт для руководства: все брони от старых к новым
+   ═══════════════════════════════════════════════════════════════ */
+function renderSummary(v) {
+  const head = el('div', 'page-head');
+  head.appendChild(el('h2', null, 'Сводка для руководства'));
+  head.appendChild(el('div', 'spacer'));
+  const printBtn = el('button', 'btn btn-sm no-print', '🖨 Печать');
+  printBtn.onclick = () => window.print();
+  head.appendChild(printBtn);
+  v.appendChild(head);
+
+  const floorOf = p => { const z = zoneById(p.zoneId); return z ? z.floor : 999; };
+  const list = [...State.placements].sort((a, b) =>
+    (floorOf(a) - floorOf(b)) ||
+    byCode(zoneById(a.zoneId) || {}, zoneById(b.zoneId) || {}) ||
+    (a.start || '').localeCompare(b.start || ''));
+
+  if (!list.length) {
+    v.appendChild(el('div', 'empty', `<div class="em-icon">📋</div><h3>Пока пусто</h3><p>Добавьте размещения — они появятся в сводке.</p>`));
+    return;
+  }
+
+  const rows = list.map(p => {
+    const z = zoneById(p.zoneId);
+    const m = placementMoney(p);
+    const perDay = Math.round(m.perDay);
+    const si = statusInfo(p.status);
+    return `<tr data-pid="${p.id}">
+      <td class="sm-c">${z ? z.floor : '—'}</td>
+      <td>${esc(z ? ((z.code ? z.code + ' · ' : '') + z.name) : '—')}</td>
+      <td><b>${esc(p.brand || '—')}</b></td>
+      <td>${fmtDate(p.start)}</td>
+      <td>${fmtDate(p.end)}</td>
+      <td class="sm-c">${m.days} дн.</td>
+      <td class="sm-r">${fmtUsd(perDay)}</td>
+      <td class="sm-r">${fmtUsd(perDay * 30)}</td>
+      <td class="sm-r"><b>${fmtUsd(m.totalAgreed)}</b></td>
+      <td><span class="bi-status" style="background:${si.color}22;color:${si.color}">${si.label}</span></td>
+    </tr>`;
+  }).join('');
+
+  const wrap = el('div', 'summary-wrap');
+  wrap.innerHTML = `<table class="summary-table">
+    <thead><tr>
+      <th>Этаж</th><th>Зона</th><th>Арендатор</th><th>Начало</th><th>Окончание</th>
+      <th>Длительность</th><th>Стоимость в день</th><th>Стоимость в месяц</th><th>Итого за аренду</th><th>Статус</th>
+    </tr></thead>
+    <tbody>${rows}</tbody></table>`;
+  v.appendChild(wrap);
+  wrap.querySelectorAll('[data-pid]').forEach(r => r.onclick = () => openPlacementCard(r.dataset.pid));
+}
+
 function renderDashboard(v) {
   const year = new Date().getFullYear();
   const yStart = `${year}-01-01`, yEnd = `${year}-12-31`;
@@ -2619,17 +2705,24 @@ function renderDashboard(v) {
   for (const z of State.zones) { const st = zoneBooking(z).state; if (st === 'busy') cBusy++; else if (st === 'process') cProc++; else cFree++; }
   const totalZones = State.zones.length || 1;
 
-  // динамика РЕАЛЬНОГО дохода по месяцам — только Подтверждено + Завершено (без Переговоров).
-  const months = Array(12).fill(0);
+  // динамика дохода по месяцам — только Подтверждено + Завершено (без Переговоров),
+  // с разделением на уже заработанное (по сегодня) и будущее (после сегодня).
+  const today = todayStr();
+  const tomorrow = addDays(today, 1);
+  const earnedMonths = Array(12).fill(0), futureMonths = Array(12).fill(0);
   for (const p of ps) {
     if (!real.has(p.status)) continue;
     const m = placementMoney(p); const perDay = m.days ? m.totalAgreed / m.days : 0;
     for (let mo = 0; mo < 12; mo++) {
       const ms = `${year}-${String(mo + 1).padStart(2, '0')}-01`;
       const me = `${year}-${String(mo + 1).padStart(2, '0')}-${String(daysInMonth(year, mo)).padStart(2, '0')}`;
-      months[mo] += overlapDays(p, ms, me) * perDay;
+      const earnEnd = me < today ? me : today;              // включая сегодня
+      if (earnEnd >= ms) earnedMonths[mo] += overlapDays(p, ms, earnEnd) * perDay;
+      const futStart = ms > tomorrow ? ms : tomorrow;
+      if (futStart <= me) futureMonths[mo] += overlapDays(p, futStart, me) * perDay;
     }
   }
+  const months = earnedMonths.map((e, i) => e + futureMonths[i]);
   const maxM = Math.max(1, ...months);
   const yearRevenue = months.reduce((a, b) => a + b, 0);
 
@@ -2656,24 +2749,43 @@ function renderDashboard(v) {
   head.appendChild(el('h2', null, `Дашборд · ${year}`));
   v.appendChild(head);
 
+  // Дневная модель (как в мешках): Завершено · Текущие (заработано) · Будущие (остаток) · Итого
+  const bk = moneyBuckets();
+  const doneRows = basketRows('done'), currentRows = basketRows('current'), futureRows = basketRows('future');
+  const kpiListRows = rows => rows.length ? `<div class="kpi-list">${rows.map(({ p, amount }) => {
+    const z = zoneById(p.zoneId);
+    return `<div class="kpi-li"><span class="kpi-pair"><span class="kpi-zone">${esc(z ? z.name : '—')}</span> · <b>${esc(p.brand)}</b></span><span class="kpi-amt">${fmtUsd(amount)}</span></div>`;
+  }).join('')}</div>` : '<div class="kpi-empty">— нет —</div>';
+
   // KPI
   const kpis = el('div', 'dash-kpis');
   kpis.innerHTML = `
-    <div class="kpi accent"><div class="kpi-ic">🏆</div><div class="kpi-val">${fmtUsd(itogo)}</div><div class="kpi-lbl">Итого накопительно</div></div>
-    <div class="kpi slate"><div class="kpi-ic">💰</div><div class="kpi-val">${fmtUsd(doneSum)}</div><div class="kpi-lbl">Завершено · доход</div>${kpiList(doneList)}</div>
-    <div class="kpi green"><div class="kpi-ic">✅</div><div class="kpi-val">${fmtUsd(busySum)}</div><div class="kpi-lbl">Подтверждено</div>${kpiList(busyList)}</div>
-    <div class="kpi amber"><div class="kpi-ic">💬</div><div class="kpi-val">${fmtUsd(processSum)}</div><div class="kpi-lbl">Переговоры</div>${kpiList(procList)}</div>
+    <div class="kpi accent"><div class="kpi-ic">🏆</div><div class="kpi-val">${fmtUsd(bk.total)}</div><div class="kpi-lbl">Итого накопительно</div></div>
+    <div class="kpi slate"><div class="kpi-ic">💰</div><div class="kpi-val">${fmtUsd(bk.done)}</div><div class="kpi-lbl">Завершено · доход</div>${kpiListRows(doneRows)}</div>
+    <div class="kpi green"><div class="kpi-ic">📅</div><div class="kpi-val">${fmtUsd(bk.current)}</div><div class="kpi-lbl">Текущие · заработано</div>${kpiListRows(currentRows)}</div>
+    <div class="kpi amber"><div class="kpi-ic">⏳</div><div class="kpi-val">${fmtUsd(bk.future)}</div><div class="kpi-lbl">Будущие поступления</div>${kpiListRows(futureRows)}</div>
+    <div class="kpi"><div class="kpi-ic">💬</div><div class="kpi-val">${fmtUsd(processSum)}</div><div class="kpi-lbl">Переговоры</div>${kpiList(procList)}</div>
     <div class="kpi"><div class="kpi-ic">📊</div><div class="kpi-val">${avgLoad}%</div><div class="kpi-lbl">Средняя загрузка</div></div>`;
   v.appendChild(kpis);
 
-  // полоска счётчиков
-  const strip = el('div', 'dash-strip');
+  // статус зон сейчас — горизонтальный бар (вместо пончика)
+  const seg = (n, color, label) => n > 0 ? `<div class="ss-seg" style="flex:${n};background:${color}" title="${label}: ${n}"></div>` : '';
+  const strip = el('div', 'status-strip');
   strip.innerHTML = `
-    <span><b>${cBusy}</b> подтверждено</span><span class="sep"></span>
-    <span><b>${cProc}</b> переговоры</span><span class="sep"></span>
-    <span><b>${cFree}</b> свободно</span><span class="sep"></span>
-    <span><b>${tenants}</b> арендаторов</span><span class="sep"></span>
-    <span><b>${ps.length}</b> размещений</span>`;
+    <div class="ss-head"><b>Статус зон сейчас</b> <span class="muted">· ${totalZones} зон</span></div>
+    <div class="ss-bar">
+      ${seg(cBusy, '#10b981', 'Подтверждено')}
+      ${seg(cProc, '#f59e0b', 'Переговоры')}
+      ${seg(cFree, '#ef4444', 'Свободно')}
+    </div>
+    <div class="ss-legend">
+      <span><i style="background:#10b981"></i>Подтверждено <b>${cBusy}</b></span>
+      <span><i style="background:#f59e0b"></i>Переговоры <b>${cProc}</b></span>
+      <span><i style="background:#ef4444"></i>Свободно <b>${cFree}</b></span>
+      <span class="ss-gap"></span>
+      <span><b>${tenants}</b> арендаторов</span>
+      <span><b>${ps.length}</b> размещений</span>
+    </div>`;
   v.appendChild(strip);
 
   // сетка панелей
@@ -2681,32 +2793,75 @@ function renderDashboard(v) {
 
   // динамика по месяцам (значения прямо на столбцах)
   const short = (n) => { n = Math.round(n); if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'млн'; if (n >= 1e3) return Math.round(n / 1e3) + 'к'; return n ? '' + n : ''; };
+  const earnedYear = earnedMonths.reduce((a, b) => a + b, 0);
+  const futureYear = futureMonths.reduce((a, b) => a + b, 0);
+
+  // ── Поступления по месяцам (только факт — заработанное) ──
+  const maxE = Math.max(1, ...earnedMonths);
   const chart = el('div', 'panel');
-  chart.innerHTML = `<div class="panel-title">Динамика реального дохода по месяцам <span class="muted" style="font-weight:400;font-size:12.5px">· подтверждено + завершено</span></div>
-    <div class="chart">${months.map((val, i) => {
-      const h = Math.round(val / maxM * 100);
+  chart.innerHTML = `<div class="panel-title">Поступления по месяцам <span class="muted" style="font-weight:400;font-size:12.5px">· факт</span></div>
+    <div class="chart">${earnedMonths.map((val, i) => {
+      const h = Math.round(val / maxE * 100);
       return `<div class="chart-col" title="${MONTHS[i]}: ${fmtUsd(Math.round(val))}">
-        <div class="chart-bar-wrap">${val > 0 ? `<div class="chart-bar-val">${short(val)}</div>` : ''}<div class="chart-bar" style="height:${h}%"></div></div>
-        <div class="chart-x">${MON_SHORT[i]}</div></div>`;
+        <div class="chart-bar-wrap">${val > 0 ? `<div class="chart-bar-val">${fmtNum(Math.round(val))}</div><div class="chart-bar" style="height:${h}%"></div>` : ''}</div>
+      </div>`;
     }).join('')}</div>
-    <div class="panel-foot">Реальный доход за год: <b>${fmtUsd(Math.round(yearRevenue))}</b></div>`;
+    <div class="chart-xrow">${MON_SHORT.map(mm => `<div>${mm}</div>`).join('')}</div>`;
   grid.appendChild(chart);
 
-  // статус зон (пончик)
-  const pB = Math.round(cBusy / totalZones * 100), pP = Math.round(cProc / totalZones * 100);
-  const donut = el('div', 'panel');
-  donut.innerHTML = `<div class="panel-title">Статус зон сейчас</div>
-    <div class="donut-wrap">
-      <div class="donut" style="background:conic-gradient(#10b981 0 ${pB}%,#f59e0b 0 ${pB + pP}%,#ef4444 0 100%)">
-        <div class="donut-hole"><div class="donut-num">${totalZones}</div><div class="donut-cap">зон</div></div>
-      </div>
-      <div class="donut-legend">
-        <div><i style="background:#10b981"></i> Подтверждено <b>${cBusy}</b></div>
-        <div><i style="background:#f59e0b"></i> Переговоры <b>${cProc}</b></div>
-        <div><i style="background:#ef4444"></i> Свободно <b>${cFree}</b></div>
-      </div>
-    </div>`;
-  grid.appendChild(donut);
+  // ── Накопительно за год: факт (монотонная кривая с заливкой) + прогноз (пунктир) ──
+  const monthlyTotal = months;                 // earned + future по месяцам
+  const cm = Math.min(11, new Date().getMonth());
+  const actualCum = []; let acc = 0;
+  for (let mo = 0; mo < 12; mo++) { acc += earnedMonths[mo]; actualCum[mo] = acc; }
+  // прогноз стартует со значения на КОНЕЦ текущего месяца (факт на сегодня + остаток месяца)
+  const forecastCum = new Array(12).fill(null);
+  forecastCum[cm] = actualCum[cm] + futureMonths[cm];
+  for (let mo = cm + 1; mo <= 11; mo++) forecastCum[mo] = forecastCum[mo - 1] + monthlyTotal[mo];
+  const endCum = forecastCum[11] != null ? forecastCum[11] : forecastCum[cm];
+  const hasJump = forecastCum[cm] > actualCum[cm] + 1;   // есть ли ещё поступления в этом месяце
+  const maxY = Math.max(1, endCum);
+  const XP = 3, TOP = 18, BOT = 100;           // координаты в 0..100 (viewBox растягивается по блоку)
+  const X = mo => +(XP + mo / 11 * (100 - 2 * XP)).toFixed(2);
+  const Y = val => +(BOT - (val / maxY) * (BOT - TOP)).toFixed(2);
+  // монотонная кубическая интерполяция (Fritsch–Carlson) — не даёт провалов/выбросов
+  const monoPath = pts => {
+    const n = pts.length; if (n < 2) return n ? `M${pts[0][0]},${pts[0][1]}` : '';
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]), dx = [], delta = [], m = [];
+    for (let i = 0; i < n - 1; i++) { dx[i] = xs[i + 1] - xs[i]; delta[i] = (ys[i + 1] - ys[i]) / dx[i]; }
+    m[0] = delta[0]; m[n - 1] = delta[n - 2];
+    for (let i = 1; i < n - 1; i++) m[i] = (delta[i - 1] * delta[i] <= 0) ? 0 : (delta[i - 1] + delta[i]) / 2;
+    for (let i = 0; i < n - 1; i++) {
+      if (delta[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
+      const a = m[i] / delta[i], b = m[i + 1] / delta[i], s = a * a + b * b;
+      if (s > 9) { const t = 3 / Math.sqrt(s); m[i] = t * a * delta[i]; m[i + 1] = t * b * delta[i]; }
+    }
+    let d = `M${xs[0]},${ys[0]}`;
+    for (let i = 0; i < n - 1; i++) d += ` C${(xs[i] + dx[i] / 3).toFixed(2)},${(ys[i] + m[i] * dx[i] / 3).toFixed(2)} ${(xs[i + 1] - dx[i] / 3).toFixed(2)},${(ys[i + 1] - m[i + 1] * dx[i] / 3).toFixed(2)} ${xs[i + 1]},${ys[i + 1]}`;
+    return d;
+  };
+  const solidArr = Array.from({ length: cm + 1 }, (_, mo) => [X(mo), Y(actualCum[mo])]);
+  const fcArr = []; for (let mo = cm; mo <= 11; mo++) if (forecastCum[mo] != null) fcArr.push([X(mo), Y(forecastCum[mo])]);
+  const areaD = solidArr.length > 1 ? monoPath(solidArr) + ` L${solidArr[solidArr.length - 1][0]},${BOT} L${solidArr[0][0]},${BOT} Z` : '';
+  const line = el('div', 'panel');
+  line.innerHTML = `<div class="panel-title">Накопительно за год
+      <span class="chart-legend"><span><i class="cl-earned"></i> факт</span><span><i class="cl-fc"></i> прогноз</span></span></div>
+    <div class="lc-plot">
+      <svg class="linechart" viewBox="0 0 100 100" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+        ${areaD ? `<path class="lc-area" d="${areaD}"/>` : ''}
+        ${hasJump ? `<line class="lc-connect" x1="${X(cm)}" y1="${Y(actualCum[cm])}" x2="${X(cm)}" y2="${Y(forecastCum[cm])}"/>` : ''}
+        ${fcArr.length > 1 ? `<path class="lc-forecast" d="${monoPath(fcArr)}"/>` : ''}
+        <path class="lc-actual" d="${monoPath(solidArr)}"/>
+      </svg>
+      <span class="lc-dot" style="left:${X(cm)}%;top:${Y(actualCum[cm])}%"></span>
+      ${hasJump ? `<span class="lc-dot lc-dot-fc" style="left:${X(cm)}%;top:${Y(forecastCum[cm])}%"></span>` : ''}
+      <span class="lc-dot lc-dot-fc" style="left:${X(11)}%;top:${Y(endCum)}%"></span>
+      <span class="lc-lbl lc-lbl-left" style="left:${X(cm)}%;top:${Y(actualCum[cm])}%">${fmtNum(Math.round(actualCum[cm]))}</span>
+      ${hasJump ? `<span class="lc-lbl" style="left:${X(cm)}%;top:${Y(forecastCum[cm])}%">${fmtNum(Math.round(forecastCum[cm]))}</span>` : ''}
+      <span class="lc-lbl lc-lbl-end" style="left:${X(11)}%;top:${Y(endCum)}%">${fmtNum(Math.round(endCum))}</span>
+    </div>
+    <div class="chart-months">${MON_SHORT.map((mm, i) => `<span style="left:${X(i)}%">${mm}</span>`).join('')}</div>`;
+  grid.appendChild(line);
 
   // загрузка по этажам: % = занятые дни накопительно / (дни в году × число зон), с раскрытием по зонам
   const loadColor = pct => pct >= 70 ? '#10b981' : pct >= 40 ? '#f59e0b' : '#ef4444';

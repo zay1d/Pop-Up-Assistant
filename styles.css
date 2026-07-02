@@ -507,9 +507,10 @@ main#view{padding:26px 22px 60px;max-width:1500px;margin:0 auto}
   padding:0 9px;border-radius:8px;background:var(--surface-2);border:1px solid var(--line-strong);
   font-weight:800;font-size:12.5px;color:var(--text-soft)}
 
-/* Сводка ставок в форме */
-.rate-summary{display:flex;gap:18px;flex-wrap:wrap;background:var(--surface-2);
-  border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13.5px;color:var(--text-soft)}
+/* Сводка ставок в форме — отдельные пилюли */
+.rate-summary{display:flex;gap:9px;flex-wrap:wrap;font-size:13px;color:var(--text-soft)}
+.rate-summary span{display:inline-flex;align-items:center;gap:5px;background:var(--surface-2);
+  border:1px solid var(--line);border-radius:20px;padding:6px 13px;white-space:nowrap}
 .rate-summary b{color:var(--text)}
 
 /* Запись истории из пилюль */
@@ -577,6 +578,31 @@ main#view{padding:26px 22px 60px;max-width:1500px;margin:0 auto}
 .basket-info .bi-sum{text-align:right;font-weight:800;white-space:nowrap;color:var(--green)}
 .basket-info tfoot td{font-weight:800;border-top:2px solid var(--line-strong);border-bottom:none;padding-top:11px}
 .bi-status{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:700;white-space:nowrap}
+
+/* ── Сводка для руководства ───────────────────────────── */
+.summary-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.summary-table{width:100%;border-collapse:collapse;font-size:13.5px}
+.summary-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;
+  color:var(--text-mute);padding:10px;border-bottom:2px solid var(--line-strong);white-space:nowrap;
+  position:sticky;top:0;background:var(--surface);z-index:1}
+.summary-table td{padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+.summary-table tbody tr{cursor:pointer}
+.summary-table tbody tr:hover{background:var(--surface-2)}
+.summary-table .sm-num{color:var(--text-mute);text-align:center}
+.summary-table .sm-c{text-align:center}
+.summary-table .sm-r{text-align:right;font-weight:700}
+@media print{
+  @page{ size:landscape; margin:10mm; }
+  .topbar{display:none !important}
+  .no-print{display:none !important}
+  #app,#view{padding:0 !important;margin:0 !important}
+  .page-head{margin:0 0 8px}
+  .summary-wrap{border:none;overflow:visible}
+  .summary-table{font-size:11px}
+  .summary-table th{position:static;padding:6px}
+  .summary-table td{padding:5px 6px}
+  .summary-table th,.summary-table td{white-space:normal}
+}
 
 /* ── Карточка арендатора: две колонки + чек-лист ───────── */
 .modal.huge{max-width:1140px}
@@ -667,13 +693,37 @@ main#view{padding:26px 22px 60px;max-width:1500px;margin:0 auto}
 .kpi-amt{margin-left:auto;color:var(--text-mute);font-size:11.5px;white-space:nowrap;flex:none}
 .kpi-empty{margin-top:10px;font-size:12px;color:var(--text-mute)}
 
-.dash-strip{display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:var(--surface);
-  border:1px solid var(--line);border-radius:12px;padding:11px 16px;box-shadow:var(--shadow);
-  margin-bottom:16px;font-size:14px;color:var(--text-soft)}
-.dash-strip b{color:var(--text);font-size:16px;font-weight:800;margin-right:3px}
-.dash-strip .sep{width:1px;height:16px;background:var(--line-strong)}
+/* Статус зон — горизонтальный бар */
+.status-strip{background:var(--surface);border:1px solid var(--line);border-radius:14px;
+  padding:10px 16px;box-shadow:var(--shadow);margin-bottom:14px}
+.ss-head{font-size:13px;color:var(--text-soft);margin-bottom:7px}
+.ss-head b{color:var(--text);font-size:13.5px}
+.ss-bar{display:flex;height:13px;border-radius:7px;overflow:hidden;background:var(--surface-2)}
+.ss-seg{min-width:3px;transition:flex .3s ease}
+.ss-legend{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12.5px;color:var(--text-soft)}
+.ss-legend i{display:inline-block;width:11px;height:11px;border-radius:4px;vertical-align:-1px;margin-right:5px}
+.ss-legend b{color:var(--text);font-weight:800;margin-left:3px}
+.ss-gap{flex:1;min-width:10px}
 
-.dash-grid{display:grid;grid-template-columns:2fr 1fr;gap:16px}
+/* Линейный график (накопительно + прогноз) — растягивается по блоку, штрих постоянный.
+   Высота области кривой = высоте области столбцов (.chart 140px минус ряд месяцев ~18px). */
+.lc-plot{position:relative;height:120px;margin-top:0;border-bottom:1px solid #cbd3dd}
+.linechart{position:absolute;inset:0;width:100%;height:100%;display:block;overflow:visible}
+.linechart .lc-actual{fill:none;stroke:#12b981;stroke-width:2;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
+.linechart .lc-forecast{fill:none;stroke:#9aa7b5;stroke-width:1.6;stroke-dasharray:5 4;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
+.linechart .lc-area{fill:rgba(18,185,129,.13);stroke:none}
+.lc-dot{position:absolute;width:8px;height:8px;border-radius:50%;background:#12b981;
+  border:2px solid var(--surface);box-shadow:0 0 0 1px rgba(0,0,0,.08);transform:translate(-50%,-50%)}
+.lc-dot-fc{background:#9aa7b5}
+.linechart .lc-connect{stroke:#9aa7b5;stroke-width:1.3;stroke-dasharray:2 2;vector-effect:non-scaling-stroke}
+.lc-lbl{position:absolute;transform:translate(-50%,-150%);font-size:10px;font-weight:700;color:var(--text);white-space:nowrap;pointer-events:none}
+.lc-lbl-end{transform:translate(-92%,-150%)}
+.lc-lbl-left{transform:translate(-112%,-40%)}
+.chart-months{position:relative;height:15px;margin-top:6px}
+.chart-months span{position:absolute;transform:translateX(-50%);font-size:10px;color:var(--text-mute);font-weight:600;white-space:nowrap}
+.chart-legend .cl-fc{background:repeating-linear-gradient(90deg,#9aa7b5 0 4px,transparent 4px 7px);border-radius:0;height:3px}
+
+.dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .dash-grid .span-all{grid-column:1 / -1}
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:18px 20px;box-shadow:var(--shadow)}
 .panel-title{font-weight:700;font-size:15px;margin-bottom:16px}
@@ -681,14 +731,23 @@ main#view{padding:26px 22px 60px;max-width:1500px;margin:0 auto}
 .panel-foot b{color:var(--green);font-size:15px}
 
 /* столбчатая динамика */
-.chart{display:flex;align-items:flex-end;gap:6px;height:200px}
+.chart{display:flex;align-items:flex-end;gap:6px;height:120px;border-bottom:1px solid #cbd3dd}
 .chart-col{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;height:100%}
+.chart-xrow{display:flex;gap:6px;margin-top:6px}
+.chart-xrow>div{flex:1;text-align:center;font-size:10px;color:var(--text-mute);font-weight:600}
 .chart-bar-wrap{flex:1;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-end}
-.chart-bar-val{font-size:9.5px;font-weight:700;color:var(--text);margin-bottom:3px;white-space:nowrap;line-height:1}
-.chart-bar{width:74%;min-height:2px;border-radius:6px 6px 0 0;
-  background:linear-gradient(180deg,var(--accent),#7c75ee);transition:height .3s ease;cursor:default}
-.chart-col:hover .chart-bar{filter:brightness(1.08)}
-.chart-x{font-size:11px;color:var(--text-mute);font-weight:600;margin-top:6px}
+.chart-bar-val{font-size:10px;font-weight:700;color:var(--text);margin-bottom:3px;white-space:nowrap;line-height:1}
+.chart-bar{width:74%;min-height:2px;border-radius:6px 6px 0 0;overflow:hidden;
+  background:linear-gradient(180deg,#12b981,#0e9c6c);transition:height .3s ease;cursor:default}
+/* будущая (ещё не заработанная) часть столбца — сверху, штриховкой */
+.cb-future{width:100%;background:repeating-linear-gradient(135deg,#cdd6e0 0 5px,#e6ebf1 5px 10px);
+  border-bottom:1px solid rgba(0,0,0,.08)}
+.chart-col:hover .chart-bar{filter:brightness(1.06)}
+.chart-legend{float:right;display:inline-flex;gap:12px;font-size:11.5px;font-weight:600;color:var(--text-soft)}
+.chart-legend i{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-1px;margin-right:3px}
+.chart-legend .cl-earned{background:#12b981}
+.chart-legend .cl-future{background:repeating-linear-gradient(135deg,#cdd6e0 0 3px,#e6ebf1 3px 6px)}
+.chart-x{font-size:10px;color:var(--text-mute);font-weight:600;margin-top:6px}
 
 /* пончик статусов */
 .donut-wrap{display:flex;align-items:center;gap:18px;flex-wrap:wrap;justify-content:center}
