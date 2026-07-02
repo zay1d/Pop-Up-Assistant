@@ -20,6 +20,26 @@
   if (!API_BASE) return;                       // автономный режим — ничего не меняем.
   localStorage.setItem('popup_api_base', API_BASE);
 
+  // ── Защита от падения рендера при отсутствующем blob ────────────────────────
+  // В облачном режиме blob'ы документов тянутся из R2. Если какой-то файл не
+  // докачался (нет docId, ошибка сети/CORS), в IndexedDB у него blob = null.
+  // app.js вызывает URL.createObjectURL(blob) напрямую при отрисовке карточек
+  // арендаторов и галереи; для null/не-Blob это ВЫБРАСЫВАЕТ исключение и рвёт
+  // весь рендер (карточки «исчезают»). Локально такого не бывает — там blob
+  // всегда есть. Оборачиваем createObjectURL так, чтобы для «плохого» значения
+  // вернуть безопасную заглушку вместо ошибки. Для валидных Blob — поведение
+  // не меняется. Живёт в cloud.js, поэтому переживает обновления app.js.
+  if (typeof URL !== 'undefined' && URL.createObjectURL && !URL.__popupSafeWrapped) {
+    var _origCreateObjectURL = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = function (obj) {
+      if (typeof Blob !== 'undefined' && obj instanceof Blob) return _origCreateObjectURL(obj);
+      if (typeof MediaSource !== 'undefined' && obj instanceof MediaSource) return _origCreateObjectURL(obj);
+      console.warn('[cloud] URL.createObjectURL получил не-Blob (документ не докачан из R2?) — заглушка вместо ошибки', obj);
+      return 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';  // 1×1 прозрачный gif
+    };
+    URL.__popupSafeWrapped = true;
+  }
+
   // Версия дампа — должна совпадать с exportData() в app.js.
   var DUMP_VERSION = 4;
   // Хранилища IndexedDB, которые мы очищаем/заполняем при загрузке (как importData).
@@ -132,7 +152,17 @@
     docKeys = Object.create(null);
 
     var z = dump.zones || [];        for (var a = 0; a < z.length; a++) await dbPut('zones', z[a]);
-    var p = dump.placements || [];   for (var b = 0; b < p.length; b++) await dbPut('placements', p[b]);
+    // Нормализуем размещения: start/end ДОЛЖНЫ быть строками. app.js сортирует
+    // список арендаторов через b.start.localeCompare(a.start) — если у записи
+    // start отсутствует (null/undefined), это выбрасывает исключение и рушит
+    // весь рендер вкладки. Приводим к '' на всякий случай (durable, в cloud.js).
+    var p = dump.placements || [];
+    for (var b = 0; b < p.length; b++) {
+      var pl = p[b];
+      if (pl && typeof pl.start !== 'string') pl.start = pl.start == null ? '' : String(pl.start);
+      if (pl && typeof pl.end !== 'string') pl.end = pl.end == null ? '' : String(pl.end);
+      await dbPut('placements', pl);
+    }
     var h = dump.history || [];      for (var c = 0; c < h.length; c++) await dbPut('history', h[c]);
     var l = dump.labels || [];       for (var d = 0; d < l.length; d++) await dbPut('labels', l[d]);
 
