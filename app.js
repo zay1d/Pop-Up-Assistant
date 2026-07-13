@@ -132,10 +132,16 @@ function placementMoney(p) {
   const days = (p.start && p.end) ? diffDaysIncl(p.start, p.end) : 0;
   const discount = Number(p.discount) || 0;
   const totalBase = dayRate * days;
-  const manual = (p.manualCost != null && p.manualCost !== '');  // ручная стоимость задана
-  const totalAgreed = manual ? (Number(p.manualCost) || 0) : Math.round(totalBase * (1 - discount / 100));
+  const manual = (p.manualCost != null && p.manualCost !== '');      // ручная общая сумма к оплате
+  const manualMo = (p.manualMonth != null && p.manualMonth !== '');  // ручная стоимость в месяц
+  // Приоритет: ручная общая сумма → ручная «в месяц» (× дни/30) → расчёт из ставки зоны.
+  let totalAgreed;
+  if (manual) totalAgreed = Number(p.manualCost) || 0;
+  else if (manualMo) totalAgreed = Math.round((Number(p.manualMonth) || 0) / 30 * days);
+  else totalAgreed = Math.round(totalBase * (1 - discount / 100));
   const perDay = days ? totalAgreed / days : 0;   // стоимость аренды в день = общая ÷ дни
-  return { dayRate, days, discount, totalBase, totalAgreed, manual, area: Number(p.area) || 0, perDay };
+  const perMonth = manualMo ? (Number(p.manualMonth) || 0) : Math.round(perDay) * 30;
+  return { dayRate, days, discount, totalBase, totalAgreed, manual, manualMo, area: Number(p.area) || 0, perDay, perMonth };
 }
 
 // Разбивка брони по дням: сколько уже заработано (по прошедшим дням) и сколько осталось.
@@ -1903,7 +1909,7 @@ async function openPlacementCard(pid) {
           <tr><td class="k">Скидка</td><td>${m.manual ? '—' : (m.discount ? m.discount + ' %' : '—')}</td></tr>
           <tr><td class="k">К оплате (аренда)</td><td><b style="color:var(--green)">${fmtUsd(m.totalAgreed)}</b>${m.manual ? ' <span class="muted">(вручную)</span>' : ''}</td></tr>
           <tr><td class="k">Стоимость аренды в день</td><td><b>${fmtUsd(Math.round(m.perDay))}</b> <span class="muted">(итог ÷ ${m.days || 0} дн.)</span></td></tr>
-          <tr><td class="k">Стоимость в месяц</td><td><b>${fmtUsd(Math.round(m.perDay) * 30)}</b> <span class="muted">(в день × 30)</span></td></tr>
+          <tr><td class="k">Стоимость в месяц</td><td><b>${fmtUsd(m.perMonth)}</b> <span class="muted">${m.manualMo ? '(вручную)' : '(в день × 30)'}</span></td></tr>
           ${isMoneyPlacement(p) ? (() => { const sp = placementSplit(p); return `
           <tr><td class="k">Заработано на сегодня</td><td><b style="color:var(--green)">${fmtUsd(sp.earned)}</b> <span class="muted">(${sp.earnedDays} из ${sp.days} дн.)</span></td></tr>
           <tr><td class="k">Остаток (в будущее)</td><td>${fmtUsd(sp.remaining)}</td></tr>`; })() : ''}
@@ -2301,7 +2307,9 @@ async function openPlacementForm(pid, preset) {
 
         <div class="field"><label>Стоимость за день ($)</label><input id="f-dayrate" type="number" readonly value="" style="background:var(--surface-2)"><div class="hint">из зоны (изменяется в файле)</div></div>
         <div class="field"><label>Скидка, %</label><input id="f-discount" type="number" min="0" max="100" value="${p&&p.discount!=null?p.discount:''}" placeholder="0"></div>
-        <div class="field full"><label class="check-row"><input type="checkbox" id="f-manual-on" ${p&&p.manualCost!=null&&p.manualCost!==''?'checked':''}> Добавить стоимость вручную</label>
+        <div class="field full"><label class="check-row"><input type="checkbox" id="f-manual-month-on" ${p&&p.manualMonth!=null&&p.manualMonth!==''?'checked':''}> Задать стоимость в месяц вручную</label>
+          <input id="f-manual-month" type="number" placeholder="Стоимость в месяц, $" value="${p&&p.manualMonth!=null?p.manualMonth:''}"></div>
+        <div class="field full"><label class="check-row"><input type="checkbox" id="f-manual-on" ${p&&p.manualCost!=null&&p.manualCost!==''?'checked':''}> Задать общую сумму вручную</label>
           <input id="f-manual" type="number" placeholder="Сумма к оплате, $" value="${p&&p.manualCost!=null?p.manualCost:''}"></div>
         <div class="field full"><label>Расчёт стоимости аренды</label><div class="rate-summary" id="f-totals">—</div></div>
 
@@ -2358,21 +2366,29 @@ async function openPlacementForm(pid, preset) {
     const days = (s && e && e >= s) ? diffDaysIncl(s, e) : 0;
     const disc = Math.min(100, Math.max(0, Number($('#f-discount').value) || 0));
     const totalBase = dayRate * days;
-    const manualOn = $('#f-manual-on').checked;
+    const manualOn = $('#f-manual-on').checked;         // ручная общая сумма
+    const manualMoOn = $('#f-manual-month-on').checked; // ручная стоимость в месяц
     $('#f-manual').disabled = !manualOn;
-    $('#f-discount').disabled = manualOn;
-    const totalAgreed = manualOn ? (Number($('#f-manual').value) || 0) : Math.round(totalBase * (1 - disc / 100));
+    $('#f-manual-month').disabled = !manualMoOn;
+    $('#f-discount').disabled = manualOn || manualMoOn;
+    // Приоритет: общая сумма → в месяц (× дни/30) → расчёт из ставки зоны.
+    let totalAgreed;
+    if (manualOn) totalAgreed = Number($('#f-manual').value) || 0;
+    else if (manualMoOn) totalAgreed = Math.round((Number($('#f-manual-month').value) || 0) / 30 * days);
+    else totalAgreed = Math.round(totalBase * (1 - disc / 100));
     const perDay = days ? Math.round(totalAgreed / days) : 0;
+    const perMonth = manualMoOn ? (Number($('#f-manual-month').value) || 0) : perDay * 30;
+    const note = manualOn ? ' (сумма вручную)' : (manualMoOn ? ' (из «в месяц»)' : '');
     $('#f-totals').innerHTML =
       `<span>Дней: <b>${days}</b></span>` +
       `<span>Без скидки: <b>${fmtUsd(totalBase)}</b></span>` +
-      `<span>Скидка: <b>${manualOn ? '—' : disc + '%'}</b></span>` +
-      `<span>К оплате: <b style="color:var(--green)">${fmtUsd(totalAgreed)}</b>${manualOn ? ' (вручную)' : ''}</span>` +
+      `<span>Скидка: <b>${(manualOn || manualMoOn) ? '—' : disc + '%'}</b></span>` +
+      `<span>К оплате: <b style="color:var(--green)">${fmtUsd(totalAgreed)}</b>${note}</span>` +
       `<span>Стоимость в день: <b>${fmtUsd(perDay)}</b></span>` +
-      `<span>Стоимость в месяц: <b>${fmtUsd(perDay * 30)}</b></span>`;
+      `<span>Стоимость в месяц: <b>${fmtUsd(perMonth)}</b>${manualMoOn ? ' (вручную)' : ''}</span>`;
   };
-  ['#f-zone', '#f-start', '#f-end', '#f-discount', '#f-manual', '#f-manual-on'].forEach(sel => {
-    const ev = (sel === '#f-zone' || sel === '#f-manual-on') ? 'change' : 'input';
+  ['#f-zone', '#f-start', '#f-end', '#f-discount', '#f-manual', '#f-manual-on', '#f-manual-month', '#f-manual-month-on'].forEach(sel => {
+    const ev = (sel === '#f-zone' || sel === '#f-manual-on' || sel === '#f-manual-month-on') ? 'change' : 'input';
     $(sel).addEventListener(ev, recalcRates);
   });
   recalcRates();
@@ -2470,6 +2486,7 @@ async function openPlacementForm(pid, preset) {
       area: $('#f-area').value.trim(),
       discount: $('#f-discount').value === '' ? 0 : Number($('#f-discount').value),
       manualCost: $('#f-manual-on').checked && $('#f-manual').value !== '' ? Number($('#f-manual').value) : null,
+      manualMonth: $('#f-manual-month-on').checked && $('#f-manual-month').value !== '' ? Number($('#f-manual-month').value) : null,
       contractor: $('#f-contractor').value.trim(),
       costMake: $('#f-make').value === '' ? null : Number($('#f-make').value),
       docsLink: $('#f-docs').value.trim(),
