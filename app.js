@@ -144,19 +144,70 @@ function placementMoney(p) {
   return { dayRate, days, discount, totalBase, totalAgreed, manual, manualMo, area: Number(p.area) || 0, perDay, perMonth };
 }
 
-// Разбивка брони по дням: сколько уже заработано (по прошедшим дням) и сколько осталось.
+// ── Помесячное начисление (деньги «ложатся в месяц») ────────────────────────
+// Календарные месяцы, которые охватывает размещение (от месяца начала до месяца
+// конца включительно). Возвращает список {y, m} (m: 1–12).
+function placementMonthSpan(p) {
+  if (!p.start || !p.end) return [];
+  const s = p.start.split('-').map(Number), e = p.end.split('-').map(Number);
+  let y = s[0], m = s[1];
+  const ey = e[0], em = e[1];
+  const out = [];
+  let guard = 0;
+  while ((y < ey || (y === ey && m <= em)) && guard++ < 1200) {
+    out.push({ y: y, m: m });
+    if (++m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+
+// Общая сумма размещения делится ПОРОВНУ на охваченные календарные месяцы.
+// Для каждого месяца считаем «заработано к сегодня»: прошедший месяц — целиком,
+// будущий — 0, текущий — пропорционально дням присутствия аренды в этом месяце
+// до сегодняшнего дня (включительно). Возвращает доли по месяцам + earned/future.
+function monthlyAccrual(p) {
+  const total = placementMoney(p).totalAgreed;
+  const span = placementMonthSpan(p);
+  const n = span.length || 1;
+  const share = total / n;
+  const t = todayStr();
+  let earnedSum = 0;
+  const months = span.map(function (mm) {
+    const y = mm.y, m = mm.m;
+    const mStart = y + '-' + String(m).padStart(2, '0') + '-01';
+    const mEnd = y + '-' + String(m).padStart(2, '0') + '-' + String(daysInMonth(y, m - 1)).padStart(2, '0');
+    let earned = 0, future = 0;
+    if (mEnd < t) earned = share;                 // месяц полностью в прошлом
+    else if (mStart > t) future = share;          // месяц полностью впереди
+    else {                                        // текущий месяц — пропорц. дням
+      const ovStart = p.start > mStart ? p.start : mStart;
+      const ovEnd = p.end < mEnd ? p.end : mEnd;
+      const ovDays = Math.max(1, diffDaysIncl(ovStart, ovEnd));
+      const upto = t < ovEnd ? t : ovEnd;
+      const eDays = upto >= ovStart ? diffDaysIncl(ovStart, upto) : 0;
+      const frac = Math.min(1, Math.max(0, eDays / ovDays));
+      earned = share * frac; future = share - earned;
+    }
+    earnedSum += earned;
+    return { y: y, m: m, amount: share, earned: earned, future: future };
+  });
+  return { total: total, share: share, months: months, earned: Math.round(earnedSum), future: Math.round(total - earnedSum) };
+}
+
+// Разбивка брони: сколько уже заработано и сколько осталось. Начисление —
+// ПОМЕСЯЧНОЕ (см. monthlyAccrual): сумма ложится в календарные месяцы поровну.
 // Считаем только подтверждённые/завершённые брони. «Завершено» — по дате окончания.
-// Сегодняшний день считается уже заработанным (входит в earnedDays).
 function isMoneyPlacement(p) { return p.status === 'busy' || p.status === 'done'; }
 function placementSplit(p) {
-  const total = placementMoney(p).totalAgreed;
+  const acc = monthlyAccrual(p);
+  const total = acc.total;
   const days = Math.max(1, (p.start && p.end) ? diffDaysIncl(p.start, p.end) : 1);
-  const perDay = total / days;
+  const perDay = total / days;   // «в день» — только для отображения
   const t = todayStr();
   if (p.end < t) return { total, days, perDay, earnedDays: days, earned: total, remaining: 0, bucket: 'done' };
   if (p.start > t) return { total, days, perDay, earnedDays: 0, earned: 0, remaining: total, bucket: 'future' };
-  const earnedDays = Math.min(days, Math.max(0, diffDaysIncl(p.start, t)));   // сегодня входит
-  const earned = Math.round(total * earnedDays / days);
+  const earnedDays = Math.min(days, Math.max(0, diffDaysIncl(p.start, t)));   // сегодня входит (для «N из M дн.»)
+  const earned = acc.earned;    // заработано = начислено по месяцам к сегодня
   return { total, days, perDay, earnedDays, earned, remaining: total - earned, bucket: 'active' };
 }
 // Суммы по мешкам с учётом дневного дохода.
@@ -2725,18 +2776,16 @@ function renderDashboard(v) {
   // динамика дохода по месяцам — только Подтверждено + Завершено (без Переговоров),
   // с разделением на уже заработанное (по сегодня) и будущее (после сегодня).
   const today = todayStr();
-  const tomorrow = addDays(today, 1);
   const earnedMonths = Array(12).fill(0), futureMonths = Array(12).fill(0);
   for (const p of ps) {
     if (!real.has(p.status)) continue;
-    const m = placementMoney(p); const perDay = m.days ? m.totalAgreed / m.days : 0;
-    for (let mo = 0; mo < 12; mo++) {
-      const ms = `${year}-${String(mo + 1).padStart(2, '0')}-01`;
-      const me = `${year}-${String(mo + 1).padStart(2, '0')}-${String(daysInMonth(year, mo)).padStart(2, '0')}`;
-      const earnEnd = me < today ? me : today;              // включая сегодня
-      if (earnEnd >= ms) earnedMonths[mo] += overlapDays(p, ms, earnEnd) * perDay;
-      const futStart = ms > tomorrow ? ms : tomorrow;
-      if (futStart <= me) futureMonths[mo] += overlapDays(p, futStart, me) * perDay;
+    // Помесячное начисление: сумма делится поровну на охваченные месяцы; в годовом
+    // графике показываем только месяцы этого года (доли других лет — в их годах).
+    const acc = monthlyAccrual(p);
+    for (const mm of acc.months) {
+      if (mm.y !== year) continue;
+      earnedMonths[mm.m - 1] += mm.earned;
+      futureMonths[mm.m - 1] += mm.future;
     }
   }
   const months = earnedMonths.map((e, i) => e + futureMonths[i]);
