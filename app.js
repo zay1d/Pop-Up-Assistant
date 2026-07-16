@@ -130,18 +130,19 @@ function placementMoney(p) {
   const z = zoneById(p.zoneId);
   const dayRate = z ? Number(z.dayRate) || 0 : 0;
   const days = (p.start && p.end) ? diffDaysIncl(p.start, p.end) : 0;
+  const months = placementMonthSpan(p).length || 1;   // число охваченных календарных месяцев
   const discount = Number(p.discount) || 0;
   const totalBase = dayRate * days;
   const manual = (p.manualCost != null && p.manualCost !== '');      // ручная общая сумма к оплате
   const manualMo = (p.manualMonth != null && p.manualMonth !== '');  // ручная стоимость в месяц
-  // Приоритет: ручная общая сумма → ручная «в месяц» (× дни/30) → расчёт из ставки зоны.
+  // Приоритет: ручная общая сумма → ручная «в месяц» (× число месяцев) → расчёт из ставки зоны.
   let totalAgreed;
   if (manual) totalAgreed = Number(p.manualCost) || 0;
-  else if (manualMo) totalAgreed = Math.round((Number(p.manualMonth) || 0) / 30 * days);
+  else if (manualMo) totalAgreed = Math.round((Number(p.manualMonth) || 0) * months);
   else totalAgreed = Math.round(totalBase * (1 - discount / 100));
-  const perDay = days ? totalAgreed / days : 0;   // стоимость аренды в день = общая ÷ дни
-  const perMonth = manualMo ? (Number(p.manualMonth) || 0) : Math.round(perDay) * 30;
-  return { dayRate, days, discount, totalBase, totalAgreed, manual, manualMo, area: Number(p.area) || 0, perDay, perMonth };
+  const perDay = days ? totalAgreed / days : 0;         // стоимость аренды в день = итог ÷ дни
+  const perMonth = Math.round(totalAgreed / months);    // стоимость в месяц = итог ÷ число месяцев (помесячно)
+  return { dayRate, days, months, discount, totalBase, totalAgreed, manual, manualMo, area: Number(p.area) || 0, perDay, perMonth };
 }
 
 // ── Помесячное начисление (деньги «ложатся в месяц») ────────────────────────
@@ -1960,7 +1961,7 @@ async function openPlacementCard(pid) {
           <tr><td class="k">Скидка</td><td>${m.manual ? '—' : (m.discount ? m.discount + ' %' : '—')}</td></tr>
           <tr><td class="k">К оплате (аренда)</td><td><b style="color:var(--green)">${fmtUsd(m.totalAgreed)}</b>${m.manual ? ' <span class="muted">(вручную)</span>' : ''}</td></tr>
           <tr><td class="k">Стоимость аренды в день</td><td><b>${fmtUsd(Math.round(m.perDay))}</b> <span class="muted">(итог ÷ ${m.days || 0} дн.)</span></td></tr>
-          <tr><td class="k">Стоимость в месяц</td><td><b>${fmtUsd(m.perMonth)}</b> <span class="muted">${m.manualMo ? '(вручную)' : '(в день × 30)'}</span></td></tr>
+          <tr><td class="k">Стоимость в месяц</td><td><b>${fmtUsd(m.perMonth)}</b> <span class="muted">${m.manualMo ? '(вручную)' : '(итог ÷ ' + m.months + ' мес.)'}</span></td></tr>
           ${isMoneyPlacement(p) ? (() => { const sp = placementSplit(p); return `
           <tr><td class="k">Заработано на сегодня</td><td><b style="color:var(--green)">${fmtUsd(sp.earned)}</b> <span class="muted">(${sp.earnedDays} из ${sp.days} дн.)</span></td></tr>
           <tr><td class="k">Остаток (в будущее)</td><td>${fmtUsd(sp.remaining)}</td></tr>`; })() : ''}
@@ -2417,18 +2418,19 @@ async function openPlacementForm(pid, preset) {
     const days = (s && e && e >= s) ? diffDaysIncl(s, e) : 0;
     const disc = Math.min(100, Math.max(0, Number($('#f-discount').value) || 0));
     const totalBase = dayRate * days;
+    const months = placementMonthSpan({ start: s, end: e }).length || 1;  // охваченных месяцев
     const manualOn = $('#f-manual-on').checked;         // ручная общая сумма
     const manualMoOn = $('#f-manual-month-on').checked; // ручная стоимость в месяц
     $('#f-manual').disabled = !manualOn;
     $('#f-manual-month').disabled = !manualMoOn;
     $('#f-discount').disabled = manualOn || manualMoOn;
-    // Приоритет: общая сумма → в месяц (× дни/30) → расчёт из ставки зоны.
+    // Приоритет: общая сумма → в месяц (× число месяцев) → расчёт из ставки зоны.
     let totalAgreed;
     if (manualOn) totalAgreed = Number($('#f-manual').value) || 0;
-    else if (manualMoOn) totalAgreed = Math.round((Number($('#f-manual-month').value) || 0) / 30 * days);
+    else if (manualMoOn) totalAgreed = Math.round((Number($('#f-manual-month').value) || 0) * months);
     else totalAgreed = Math.round(totalBase * (1 - disc / 100));
     const perDay = days ? Math.round(totalAgreed / days) : 0;
-    const perMonth = manualMoOn ? (Number($('#f-manual-month').value) || 0) : perDay * 30;
+    const perMonth = Math.round(totalAgreed / months);
     const note = manualOn ? ' (сумма вручную)' : (manualMoOn ? ' (из «в месяц»)' : '');
     $('#f-totals').innerHTML =
       `<span>Дней: <b>${days}</b></span>` +
@@ -2730,7 +2732,7 @@ function renderSummary(v) {
       <td>${fmtDate(p.end)}</td>
       <td class="sm-c">${m.days} дн.</td>
       <td class="sm-r">${fmtUsd(perDay)}</td>
-      <td class="sm-r">${fmtUsd(perDay * 30)}</td>
+      <td class="sm-r">${fmtUsd(m.perMonth)}</td>
       <td class="sm-r"><b>${fmtUsd(m.totalAgreed)}</b></td>
       <td><span class="bi-status" style="background:${si.color}22;color:${si.color}">${si.label}</span></td>
     </tr>`;
