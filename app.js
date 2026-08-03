@@ -125,90 +125,50 @@ function fmtMoney(n) { if (n == null || n === '' || isNaN(n)) return '—'; retu
 function fmtNum(n) { if (n == null || n === '' || isNaN(n)) return '0'; return Number(n).toLocaleString('ru-RU'); }
 function fmtUsd(n) { if (n == null || n === '' || isNaN(n)) return '—'; return Number(n).toLocaleString('ru-RU') + ' $'; }
 
-// Финансы размещения: фиксированная стоимость зоны в день × число дней, минус скидка %.
+// Финансы размещения: обе стоимости вводятся вручную — начальная и согласованная.
+// Скидка = (начальная − согласованная) / начальная × 100 %.
 function placementMoney(p) {
-  const z = zoneById(p.zoneId);
-  const dayRate = z ? Number(z.dayRate) || 0 : 0;
   const days = (p.start && p.end) ? diffDaysIncl(p.start, p.end) : 0;
-  const months = placementMonthSpan(p).length || 1;   // число охваченных календарных месяцев
-  const discount = Number(p.discount) || 0;
-  const totalBase = dayRate * days;
-  const manual = (p.manualCost != null && p.manualCost !== '');      // ручная общая сумма к оплате
-  const manualMo = (p.manualMonth != null && p.manualMonth !== '');  // ручная стоимость в месяц
-  // Приоритет: ручная общая сумма → ручная «в месяц» (× число месяцев) → расчёт из ставки зоны.
-  let totalAgreed;
-  if (manual) totalAgreed = Number(p.manualCost) || 0;
-  else if (manualMo) totalAgreed = Math.round((Number(p.manualMonth) || 0) * months);
-  else totalAgreed = Math.round(totalBase * (1 - discount / 100));
-  const perDay = days ? totalAgreed / days : 0;         // стоимость аренды в день = итог ÷ дни
-  const perMonth = Math.round(totalAgreed / months);    // стоимость в месяц = итог ÷ число месяцев (помесячно)
-  return { dayRate, days, months, discount, totalBase, totalAgreed, manual, manualMo, area: Number(p.area) || 0, perDay, perMonth };
-}
-
-// ── Помесячное начисление (деньги «ложатся в месяц») ────────────────────────
-// Календарные месяцы, которые охватывает размещение (от месяца начала до месяца
-// конца включительно). Возвращает список {y, m} (m: 1–12).
-function placementMonthSpan(p) {
-  if (!p.start || !p.end) return [];
-  const s = p.start.split('-').map(Number), e = p.end.split('-').map(Number);
-  let y = s[0], m = s[1];
-  const ey = e[0], em = e[1];
-  const out = [];
-  let guard = 0;
-  while ((y < ey || (y === ey && m <= em)) && guard++ < 1200) {
-    out.push({ y: y, m: m });
-    if (++m > 12) { m = 1; y++; }
-  }
-  return out;
-}
-
-// Общая сумма размещения делится ПОРОВНУ на охваченные календарные месяцы.
-// Для каждого месяца считаем «заработано к сегодня»: прошедший месяц — целиком,
-// будущий — 0, текущий — пропорционально дням присутствия аренды в этом месяце
-// до сегодняшнего дня (включительно). Возвращает доли по месяцам + earned/future.
-function monthlyAccrual(p) {
-  const total = placementMoney(p).totalAgreed;
-  const span = placementMonthSpan(p);
-  const n = span.length || 1;
-  const share = total / n;
-  const t = todayStr();
-  let earnedSum = 0;
-  const months = span.map(function (mm) {
-    const y = mm.y, m = mm.m;
-    const mStart = y + '-' + String(m).padStart(2, '0') + '-01';
-    const mEnd = y + '-' + String(m).padStart(2, '0') + '-' + String(daysInMonth(y, m - 1)).padStart(2, '0');
-    let earned = 0, future = 0;
-    if (mEnd < t) earned = share;                 // месяц полностью в прошлом
-    else if (mStart > t) future = share;          // месяц полностью впереди
-    else {                                        // текущий месяц — пропорц. дням
-      const ovStart = p.start > mStart ? p.start : mStart;
-      const ovEnd = p.end < mEnd ? p.end : mEnd;
-      const ovDays = Math.max(1, diffDaysIncl(ovStart, ovEnd));
-      const upto = t < ovEnd ? t : ovEnd;
-      const eDays = upto >= ovStart ? diffDaysIncl(ovStart, upto) : 0;
-      const frac = Math.min(1, Math.max(0, eDays / ovDays));
-      earned = share * frac; future = share - earned;
+  let base = (p.baseCost != null && p.baseCost !== '') ? Number(p.baseCost) || 0 : null;      // начальная
+  let agreed = (p.agreedCost != null && p.agreedCost !== '') ? Number(p.agreedCost) || 0 : null; // согласованная
+  // Совместимость со старыми записями (dayRate из зоны + скидка % / стоимость вручную).
+  if (agreed == null) {
+    const z = zoneById(p.zoneId);
+    const dr = z ? Number(z.dayRate) || 0 : 0;
+    if (p.manualCost != null && p.manualCost !== '') {
+      // В старой модели ручная сумма не была связана со ставкой зоны — скидки не было.
+      agreed = Number(p.manualCost) || 0;
+      if (base == null) base = agreed;
+    } else {
+      const disc = Number(p.discount) || 0;
+      if (base == null) base = dr * days;
+      agreed = Math.round(dr * days * (1 - disc / 100));
     }
-    earnedSum += earned;
-    return { y: y, m: m, amount: share, earned: earned, future: future };
-  });
-  return { total: total, share: share, months: months, earned: Math.round(earnedSum), future: Math.round(total - earnedSum) };
+  }
+  if (base == null) base = agreed;                 // начальная не задана → скидка 0
+  const totalBase = base, totalAgreed = agreed;
+  const discount = base > 0 ? Math.round((base - agreed) / base * 100) : 0;
+  const perDay = days ? totalAgreed / days : 0;    // стоимость аренды в день = согласованная ÷ дни
+  const dayRate = days ? base / days : 0;
+  // Стоимость в месяц вносится вручную; если не задана — расчёт (в день × 30).
+  const monthlyManual = (p.monthlyCost != null && p.monthlyCost !== '');
+  const monthly = monthlyManual ? (Number(p.monthlyCost) || 0) : Math.round(perDay * 30);
+  return { dayRate, days, discount, totalBase, totalAgreed, manual: true, area: Number(p.area) || 0, perDay, baseCost: base, agreedCost: agreed, monthly, monthlyManual };
 }
 
-// Разбивка брони: сколько уже заработано и сколько осталось. Начисление —
-// ПОМЕСЯЧНОЕ (см. monthlyAccrual): сумма ложится в календарные месяцы поровну.
+// Разбивка брони по дням: сколько уже заработано (по прошедшим дням) и сколько осталось.
 // Считаем только подтверждённые/завершённые брони. «Завершено» — по дате окончания.
+// Сегодняшний день считается уже заработанным (входит в earnedDays).
 function isMoneyPlacement(p) { return p.status === 'busy' || p.status === 'done'; }
 function placementSplit(p) {
-  const acc = monthlyAccrual(p);
-  const total = acc.total;
+  const total = placementMoney(p).totalAgreed;
   const days = Math.max(1, (p.start && p.end) ? diffDaysIncl(p.start, p.end) : 1);
-  const perDay = total / days;   // «в день» — только для отображения
+  const perDay = total / days;
   const t = todayStr();
   if (p.end < t) return { total, days, perDay, earnedDays: days, earned: total, remaining: 0, bucket: 'done' };
   if (p.start > t) return { total, days, perDay, earnedDays: 0, earned: 0, remaining: total, bucket: 'future' };
-  const earnedDays = Math.min(days, Math.max(0, diffDaysIncl(p.start, t)));   // сегодня входит (для «N из M дн.»)
-  const earned = acc.earned;    // заработано = начислено по месяцам к сегодня
+  const earnedDays = Math.min(days, Math.max(0, diffDaysIncl(p.start, t)));   // сегодня входит
+  const earned = Math.round(total * earnedDays / days);
   return { total, days, perDay, earnedDays, earned, remaining: total - earned, bucket: 'active' };
 }
 // Суммы по мешкам с учётом дневного дохода.
@@ -298,7 +258,7 @@ function toast(msg, type) {
 /* ───────── Модальное окно ───────── */
 function openModal(html, wide) {
   const m = $('#modal');
-  m.className = 'modal' + (wide === 'full' ? ' full' : wide === 'huge' ? ' huge' : (wide ? ' wide' : ''));
+  m.className = 'modal' + (wide === 'full' ? ' full' : wide === 'huge' ? ' huge' : wide === 'xwide' ? ' xwide' : (wide ? ' wide' : ''));
   m.innerHTML = html;
   $('#modalOverlay').hidden = false;
   m.querySelectorAll('[data-close]').forEach(b => b.onclick = closeModal);
@@ -1853,26 +1813,37 @@ async function renderTenants(v) {
   const grid = el('div', 'tenant-grid');
   v.appendChild(grid);
 
+  let drawToken = 0;
   const draw = async () => {
-    grid.innerHTML = '';
+    const token = ++drawToken;
     const q = State.search.trim().toLowerCase();
     let list = [...State.placements].sort((a,b)=>b.start.localeCompare(a.start));
     if (q) list = list.filter(p => (p.brand||'').toLowerCase().includes(q) || (zoneById(p.zoneId)?.name||'').toLowerCase().includes(q));
+
+    // Один запрос за всеми файлами вместо N запросов по одному на карточку.
+    const allFiles = await dbGetAll('files');
+    if (token !== drawToken) return;            // была новая отрисовка — эту отменяем
+    const photoByPid = {};
+    for (const f of allFiles) if (f.kind === 'photo' && !photoByPid[f.placementId]) photoByPid[f.placementId] = f;
+
     if (!list.length) {
+      grid.innerHTML = '';
       grid.appendChild(el('div', 'empty', `<div class="em-icon">🏷️</div><h3>Пока пусто</h3><p>${q?'Ничего не найдено.':'Добавьте первое размещение.'}</p>`));
       grid.style.gridTemplateColumns = '1fr';
       return;
     }
     grid.style.gridTemplateColumns = '';
+
+    const frag = document.createDocumentFragment();
     for (const p of list) {
       const z = zoneById(p.zoneId);
       const st = statusInfo(p.status);
-      const photos = await dbGetByIndex('files', 'placementId', p.id);
-      const photo = photos.find(f => f.kind === 'photo');
+      const photo = photoByPid[p.id];
+      let photoHtml = `<div class="tc-photo">🏷️</div>`;
+      if (photo && photo.blob instanceof Blob) {
+        try { photoHtml = `<div class="tc-photo" style="background-image:url('${URL.createObjectURL(photo.blob)}')"></div>`; } catch (_) {}
+      }
       const card = el('div', 'tenant-card');
-      const photoHtml = photo
-        ? `<div class="tc-photo" style="background-image:url('${URL.createObjectURL(photo.blob)}')"></div>`
-        : `<div class="tc-photo">🏷️</div>`;
       card.innerHTML = `${photoHtml}
         <div class="tc-body">
           <div class="tc-brand"><span class="tc-color" style="background:${p.color||'#4f46e5'}"></span>${esc(p.brand)}</div>
@@ -1884,8 +1855,10 @@ async function renderTenants(v) {
           </div>
         </div>`;
       card.onclick = () => openPlacementCard(p.id);
-      grid.appendChild(card);
+      frag.appendChild(card);
     }
+    grid.innerHTML = '';        // очищаем и сразу заполняем — без «мигания» и половинчатого состояния
+    grid.appendChild(frag);
   };
   sb.querySelector('input').oninput = (e) => { State.search = e.target.value; draw(); };
   draw();
@@ -1955,13 +1928,12 @@ async function openPlacementCard(pid) {
         <table class="info-table">
           <tr><td class="k">Размеры конструкции</td><td>${esc(p.dimensions)||'—'}</td></tr>
           <tr><td class="k">Площадь</td><td>${m.area?fmtNum(m.area)+' м²':'—'}</td></tr>
-          <tr><td class="k">Стоимость за день</td><td>${fmtUsd(m.dayRate)}</td></tr>
           <tr><td class="k">Дней</td><td>${m.days}</td></tr>
-          <tr><td class="k">Стоимость без скидки</td><td>${fmtUsd(m.totalBase)}</td></tr>
-          <tr><td class="k">Скидка</td><td>${m.manual ? '—' : (m.discount ? m.discount + ' %' : '—')}</td></tr>
-          <tr><td class="k">К оплате (аренда)</td><td><b style="color:var(--green)">${fmtUsd(m.totalAgreed)}</b>${m.manual ? ' <span class="muted">(вручную)</span>' : ''}</td></tr>
+          <tr><td class="k">Стоимость в месяц</td><td>${fmtUsd(m.monthly)}${m.monthlyManual ? '' : ' <span class="muted">(расчёт: в день × 30)</span>'}</td></tr>
+          <tr><td class="k">Начальная стоимость</td><td>${fmtUsd(m.totalBase)}</td></tr>
+          <tr><td class="k">Скидка</td><td>${m.discount ? m.discount + ' %' : '—'}</td></tr>
+          <tr><td class="k">Согласованная стоимость</td><td><b style="color:var(--green)">${fmtUsd(m.totalAgreed)}</b></td></tr>
           <tr><td class="k">Стоимость аренды в день</td><td><b>${fmtUsd(Math.round(m.perDay))}</b> <span class="muted">(итог ÷ ${m.days || 0} дн.)</span></td></tr>
-          <tr><td class="k">Стоимость в месяц</td><td><b>${fmtUsd(m.perMonth)}</b> <span class="muted">${m.manualMo ? '(вручную)' : '(итог ÷ ' + m.months + ' мес.)'}</span></td></tr>
           ${isMoneyPlacement(p) ? (() => { const sp = placementSplit(p); return `
           <tr><td class="k">Заработано на сегодня</td><td><b style="color:var(--green)">${fmtUsd(sp.earned)}</b> <span class="muted">(${sp.earnedDays} из ${sp.days} дн.)</span></td></tr>
           <tr><td class="k">Остаток (в будущее)</td><td>${fmtUsd(sp.remaining)}</td></tr>`; })() : ''}
@@ -2357,12 +2329,11 @@ async function openPlacementForm(pid, preset) {
         <div class="field full"><div class="form-warn" id="f-clash" hidden></div></div>
         <div class="field full"><label>Статус договора</label><select id="f-status">${statusOpts}</select></div>
 
-        <div class="field"><label>Стоимость за день ($)</label><input id="f-dayrate" type="number" readonly value="" style="background:var(--surface-2)"><div class="hint">из зоны (изменяется в файле)</div></div>
-        <div class="field"><label>Скидка, %</label><input id="f-discount" type="number" min="0" max="100" value="${p&&p.discount!=null?p.discount:''}" placeholder="0"></div>
-        <div class="field full"><label class="check-row"><input type="checkbox" id="f-manual-month-on" ${p&&p.manualMonth!=null&&p.manualMonth!==''?'checked':''}> Задать стоимость в месяц вручную</label>
-          <input id="f-manual-month" type="number" placeholder="Стоимость в месяц, $" value="${p&&p.manualMonth!=null?p.manualMonth:''}"></div>
-        <div class="field full"><label class="check-row"><input type="checkbox" id="f-manual-on" ${p&&p.manualCost!=null&&p.manualCost!==''?'checked':''}> Задать общую сумму вручную</label>
-          <input id="f-manual" type="number" placeholder="Сумма к оплате, $" value="${p&&p.manualCost!=null?p.manualCost:''}"></div>
+        <div class="field-row3">
+          <div class="field"><label>Стоимость в месяц ($)</label><input id="f-monthly" type="number" min="0" value="${p&&p.monthlyCost!=null&&p.monthlyCost!==''?p.monthlyCost:''}" placeholder="0"><div class="hint">вносится вручную</div></div>
+          <div class="field"><label>Начальная стоимость ($)</label><input id="f-base" type="number" min="0" value="${p?(p.baseCost!=null&&p.baseCost!==''?p.baseCost:placementMoney(p).totalBase):''}" placeholder="0"><div class="hint">до скидки</div></div>
+          <div class="field"><label>Согласованная стоимость ($)</label><input id="f-agreed" type="number" min="0" value="${p?(p.agreedCost!=null&&p.agreedCost!==''?p.agreedCost:placementMoney(p).totalAgreed):''}" placeholder="0"><div class="hint">итог к оплате</div></div>
+        </div>
         <div class="field full"><label>Расчёт стоимости аренды</label><div class="rate-summary" id="f-totals">—</div></div>
 
         <div class="field full">
@@ -2391,7 +2362,7 @@ async function openPlacementForm(pid, preset) {
     <div class="modal-foot">
       <button class="btn" data-close>Отмена</button>
       <button class="btn btn-primary" id="saveP">${editing?'Сохранить':'Создать'}</button>
-    </div>`, true);
+    </div>`, 'xwide');
 
   // Кнопка «Дополнительно» — раскрыть/свернуть второстепенные поля
   $('#moreBtn').onclick = () => {
@@ -2409,40 +2380,26 @@ async function openPlacementForm(pid, preset) {
     sw.classList.add('sel');
   });
 
-  // Стоимость аренды (живой пересчёт): ставка/день × дни − скидка, либо вручную
+  // Стоимость аренды (живой пересчёт): скидка = (начальная − согласованная) / начальная × 100 %
   const recalcRates = () => {
-    const z = zoneById($('#f-zone').value);
-    const dayRate = z ? Number(z.dayRate) || 0 : 0;
-    $('#f-dayrate').value = dayRate;
     const s = $('#f-start').value, e = $('#f-end').value;
     const days = (s && e && e >= s) ? diffDaysIncl(s, e) : 0;
-    const disc = Math.min(100, Math.max(0, Number($('#f-discount').value) || 0));
-    const totalBase = dayRate * days;
-    const months = placementMonthSpan({ start: s, end: e }).length || 1;  // охваченных месяцев
-    const manualOn = $('#f-manual-on').checked;         // ручная общая сумма
-    const manualMoOn = $('#f-manual-month-on').checked; // ручная стоимость в месяц
-    $('#f-manual').disabled = !manualOn;
-    $('#f-manual-month').disabled = !manualMoOn;
-    $('#f-discount').disabled = manualOn || manualMoOn;
-    // Приоритет: общая сумма → в месяц (× число месяцев) → расчёт из ставки зоны.
-    let totalAgreed;
-    if (manualOn) totalAgreed = Number($('#f-manual').value) || 0;
-    else if (manualMoOn) totalAgreed = Math.round((Number($('#f-manual-month').value) || 0) * months);
-    else totalAgreed = Math.round(totalBase * (1 - disc / 100));
-    const perDay = days ? Math.round(totalAgreed / days) : 0;
-    const perMonth = Math.round(totalAgreed / months);
-    const note = manualOn ? ' (сумма вручную)' : (manualMoOn ? ' (из «в месяц»)' : '');
+    const base = Math.max(0, Number($('#f-base').value) || 0);
+    const agreed = Math.max(0, Number($('#f-agreed').value) || 0);
+    const disc = base > 0 ? Math.round((base - agreed) / base * 100) : 0;
+    const perDay = days ? Math.round(agreed / days) : 0;
+    const monthlyIn = $('#f-monthly').value;
+    const monthly = monthlyIn !== '' ? Math.max(0, Number(monthlyIn) || 0) : (days ? Math.round(agreed / days * 30) : 0);
     $('#f-totals').innerHTML =
       `<span>Дней: <b>${days}</b></span>` +
-      `<span>Без скидки: <b>${fmtUsd(totalBase)}</b></span>` +
-      `<span>Скидка: <b>${(manualOn || manualMoOn) ? '—' : disc + '%'}</b></span>` +
-      `<span>К оплате: <b style="color:var(--green)">${fmtUsd(totalAgreed)}</b>${note}</span>` +
-      `<span>Стоимость в день: <b>${fmtUsd(perDay)}</b></span>` +
-      `<span>Стоимость в месяц: <b>${fmtUsd(perMonth)}</b>${manualMoOn ? ' (вручную)' : ''}</span>`;
+      `<span>В месяц: <b>${fmtUsd(monthly)}</b>${monthlyIn !== '' ? '' : ' (расчёт)'}</span>` +
+      `<span>Начальная: <b>${fmtUsd(base)}</b></span>` +
+      `<span>Согласованная: <b style="color:var(--green)">${fmtUsd(agreed)}</b></span>` +
+      `<span>Скидка: <b>${disc ? disc + '%' : '—'}</b></span>` +
+      `<span>Стоимость в день: <b>${fmtUsd(perDay)}</b></span>`;
   };
-  ['#f-zone', '#f-start', '#f-end', '#f-discount', '#f-manual', '#f-manual-on', '#f-manual-month', '#f-manual-month-on'].forEach(sel => {
-    const ev = (sel === '#f-zone' || sel === '#f-manual-on' || sel === '#f-manual-month-on') ? 'change' : 'input';
-    $(sel).addEventListener(ev, recalcRates);
+  ['#f-start', '#f-end', '#f-monthly', '#f-base', '#f-agreed'].forEach(sel => {
+    $(sel).addEventListener('input', recalcRates);
   });
   recalcRates();
 
@@ -2537,9 +2494,9 @@ async function openPlacementForm(pid, preset) {
       email: $('#f-email').value.trim(),
       dimensions: $('#f-dim').value.trim(),
       area: $('#f-area').value.trim(),
-      discount: $('#f-discount').value === '' ? 0 : Number($('#f-discount').value),
-      manualCost: $('#f-manual-on').checked && $('#f-manual').value !== '' ? Number($('#f-manual').value) : null,
-      manualMonth: $('#f-manual-month-on').checked && $('#f-manual-month').value !== '' ? Number($('#f-manual-month').value) : null,
+      monthlyCost: $('#f-monthly').value === '' ? null : Number($('#f-monthly').value),
+      baseCost: $('#f-base').value === '' ? null : Number($('#f-base').value),
+      agreedCost: $('#f-agreed').value === '' ? null : Number($('#f-agreed').value),
       contractor: $('#f-contractor').value.trim(),
       costMake: $('#f-make').value === '' ? null : Number($('#f-make').value),
       docsLink: $('#f-docs').value.trim(),
@@ -2621,7 +2578,7 @@ function historyEntryHtml(e, mode) {
   return `<div class="hist-entry" data-pid="${esc(e.placementId)}">
     ${first}
     <span class="he-pill">📅 ${fmtDate(e.start)} – ${fmtDate(e.end)} · ${e.days != null ? e.days : diffDaysIncl(e.start, e.end)} дн.</span>
-    <span class="he-pill">💲 ${fmtNum(e.dayRate)} $/день</span>
+    <span class="he-pill">💲 нач. ${fmtUsd(e.totalBase)}</span>
     ${discPill}
     <span class="he-pill he-total">Итого ${fmtUsd(e.totalAgreed)}</span>
   </div>`;
@@ -2719,32 +2676,91 @@ function renderSummary(v) {
     return;
   }
 
+  // Диапазон месяцев по всем размещениям (от самого раннего начала до самого позднего конца)
+  const MN = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+  const pad2 = n => String(n).padStart(2, '0');
+  const allDates = [];
+  list.forEach(p => { if (p.start) allDates.push(p.start); if (p.end) allDates.push(p.end); });
+  const minD = allDates.reduce((a, b) => a < b ? a : b);
+  const maxD = allDates.reduce((a, b) => a > b ? a : b);
+  // Все месяцы года(ов) — с января минимального до декабря максимального года, включая пустые.
+  const months = [];
+  let yy = +minD.slice(0, 4);
+  const endY = +maxD.slice(0, 4);
+  for (; yy <= endY; yy++) {
+    for (let mo = 1; mo <= 12; mo++) months.push({ y: yy, m: mo, label: MN[mo - 1], year: yy });
+  }
+
+  // Сумма аренды размещения, приходящаяся на конкретный месяц (пропорционально дням)
+  const monthAmount = (p, perDay, mo) => {
+    const mStart = `${mo.y}-${pad2(mo.m)}-01`;
+    const lastDay = new Date(mo.y, mo.m, 0).getDate();
+    const mEnd = `${mo.y}-${pad2(mo.m)}-${pad2(lastDay)}`;
+    const s = p.start > mStart ? p.start : mStart;
+    const e = p.end < mEnd ? p.end : mEnd;
+    if (e < s) return 0;
+    return Math.round(perDay * diffDaysIncl(s, e));
+  };
+
+  const monthSums = months.map(() => 0);
+  let sumBase = 0, sumAgreed = 0, sumMonthly = 0;
   const rows = list.map(p => {
     const z = zoneById(p.zoneId);
     const m = placementMoney(p);
-    const perDay = Math.round(m.perDay);
-    const si = statusInfo(p.status);
+    const confirmed = p.status === 'busy';
+    const cells = months.map((mo, i) => {
+      const a = monthAmount(p, m.perDay, mo);
+      monthSums[i] += a;
+      const cls = 'sm-mon' + (a && confirmed ? ' sm-paid' : '');
+      return `<td class="${cls}">${a ? fmtNum(a) : '<span class="sm-dash">·</span>'}</td>`;
+    }).join('');
+    sumBase += m.totalBase; sumAgreed += m.totalAgreed;
+    if (m.monthlyManual) sumMonthly += m.monthly;
+    const dotColor = p.status === 'busy' ? '#10b981' : '#f59e0b';
     return `<tr data-pid="${p.id}">
-      <td class="sm-c">${z ? z.floor : '—'}</td>
-      <td>${esc(z ? ((z.code ? z.code + ' · ' : '') + z.name) : '—')}</td>
-      <td><b>${esc(p.brand || '—')}</b></td>
+      <td>${z ? z.floor : '—'}</td>
+      <td class="sm-zone"><span class="zn">${esc(z ? ((z.code ? z.code + ' · ' : '') + z.name) : '—')}</span></td>
+      <td>${esc(p.brand || '—')}</td>
       <td>${fmtDate(p.start)}</td>
       <td>${fmtDate(p.end)}</td>
-      <td class="sm-c">${m.days} дн.</td>
-      <td class="sm-r">${fmtUsd(perDay)}</td>
-      <td class="sm-r">${fmtUsd(m.perMonth)}</td>
-      <td class="sm-r"><b>${fmtUsd(m.totalAgreed)}</b></td>
-      <td><span class="bi-status" style="background:${si.color}22;color:${si.color}">${si.label}</span></td>
+      <td>${m.days} дн.</td>
+      <td>${m.monthlyManual ? fmtNum(m.monthly) : '<span class="sm-dash">—</span>'}</td>
+      <td>${fmtNum(m.totalBase)}</td>
+      <td>${fmtNum(m.totalAgreed)}</td>
+      <td>${m.discount ? m.discount + '%' : '—'}</td>
+      ${cells}
+      <td><span class="sm-dot" style="background:${dotColor}"></span></td>
     </tr>`;
   }).join('');
 
+  const monthHead = months.map(mo => `<th class="sm-mon">${mo.label}<br><span class="sm-yr">${mo.year}</span></th>`).join('');
+  const footCells = months.map((_, i) => `<td class="sm-mon">${monthSums[i] ? fmtNum(monthSums[i]) : '·'}</td>`).join('');
+  const foot = `<tr class="sm-total">
+      <td colspan="6">Итого, $</td>
+      <td>${sumMonthly ? fmtNum(sumMonthly) : ''}</td>
+      <td>${fmtNum(sumBase)}</td>
+      <td>${fmtNum(sumAgreed)}</td>
+      <td></td>
+      ${footCells}
+      <td></td>
+    </tr>`;
+
+  const cols = `<colgroup>
+      <col style="width:34px"><col style="width:126px"><col style="width:82px">
+      <col style="width:76px"><col style="width:76px"><col style="width:44px">
+      <col style="width:78px"><col style="width:72px"><col style="width:80px"><col style="width:44px">
+      ${months.map(() => '<col>').join('')}
+      <col style="width:56px">
+    </colgroup>`;
   const wrap = el('div', 'summary-wrap');
-  wrap.innerHTML = `<table class="summary-table">
+  wrap.innerHTML = `<table class="summary-table matrix">
+    ${cols}
     <thead><tr>
-      <th>Этаж</th><th>Зона</th><th>Арендатор</th><th>Начало</th><th>Окончание</th>
-      <th>Длительность</th><th>Стоимость в день</th><th>Стоимость в месяц</th><th>Итого за аренду</th><th>Статус</th>
+      <th>Этаж</th><th class="sm-zone">Зона</th><th>Арендатор</th><th>Начало</th><th>Окончание</th>
+      <th>Длитель­ность</th><th>Стоимость в месяц</th><th>Начальная стоимость</th><th>Согласованная стоимость</th><th>Скидка</th>${monthHead}<th>Статус</th>
     </tr></thead>
-    <tbody>${rows}</tbody></table>`;
+    <tbody>${rows}</tbody>
+    <tfoot>${foot}</tfoot></table>`;
   v.appendChild(wrap);
   wrap.querySelectorAll('[data-pid]').forEach(r => r.onclick = () => openPlacementCard(r.dataset.pid));
 }
@@ -2778,16 +2794,18 @@ function renderDashboard(v) {
   // динамика дохода по месяцам — только Подтверждено + Завершено (без Переговоров),
   // с разделением на уже заработанное (по сегодня) и будущее (после сегодня).
   const today = todayStr();
+  const tomorrow = addDays(today, 1);
   const earnedMonths = Array(12).fill(0), futureMonths = Array(12).fill(0);
   for (const p of ps) {
     if (!real.has(p.status)) continue;
-    // Помесячное начисление: сумма делится поровну на охваченные месяцы; в годовом
-    // графике показываем только месяцы этого года (доли других лет — в их годах).
-    const acc = monthlyAccrual(p);
-    for (const mm of acc.months) {
-      if (mm.y !== year) continue;
-      earnedMonths[mm.m - 1] += mm.earned;
-      futureMonths[mm.m - 1] += mm.future;
+    const m = placementMoney(p); const perDay = m.days ? m.totalAgreed / m.days : 0;
+    for (let mo = 0; mo < 12; mo++) {
+      const ms = `${year}-${String(mo + 1).padStart(2, '0')}-01`;
+      const me = `${year}-${String(mo + 1).padStart(2, '0')}-${String(daysInMonth(year, mo)).padStart(2, '0')}`;
+      const earnEnd = me < today ? me : today;              // включая сегодня
+      if (earnEnd >= ms) earnedMonths[mo] += overlapDays(p, ms, earnEnd) * perDay;
+      const futStart = ms > tomorrow ? ms : tomorrow;
+      if (futStart <= me) futureMonths[mo] += overlapDays(p, futStart, me) * perDay;
     }
   }
   const months = earnedMonths.map((e, i) => e + futureMonths[i]);

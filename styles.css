@@ -333,6 +333,8 @@ main#view{padding:26px 22px 60px;max-width:1500px;margin:0 auto}
 .modal{background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow-lg);
   width:100%;max-width:620px;overflow:hidden;animation:pop .14s ease}
 .modal.wide{max-width:780px}
+.modal.xwide{max-width:1000px}
+@media (max-width:1040px){ .modal.xwide{max-width:94vw} }
 @keyframes pop{from{transform:translateY(12px) scale(.98);opacity:0}to{transform:none;opacity:1}}
 .modal-head{display:flex;align-items:center;gap:12px;padding:18px 22px;border-bottom:1px solid var(--line)}
 .modal-head h3{margin:0;font-size:19px;font-weight:700;flex:1}
@@ -347,6 +349,8 @@ main#view{padding:26px 22px 60px;max-width:1500px;margin:0 auto}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .field{display:flex;flex-direction:column;gap:5px}
 .field.full{grid-column:1 / -1}
+/* ряд из трёх полей в одну линию */
+.field-row3{grid-column:1 / -1;display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
 /* свёрнутый блок «Дополнительно»: его поля участвуют в общей сетке формы */
 .form-extra{display:contents}
 .form-extra[hidden]{display:none}
@@ -428,6 +432,7 @@ main#view{padding:26px 22px 60px;max-width:1500px;margin:0 auto}
 .lightbox img{max-width:95%;max-height:95%;border-radius:8px;box-shadow:var(--shadow-lg)}
 @media (max-width:640px){
   .form-grid{grid-template-columns:1fr}
+  .field-row3{grid-template-columns:1fr}
   .card-hero{flex-direction:column}
   .topnav button{padding:8px 10px;font-size:13px}
 }
@@ -508,8 +513,8 @@ main#view{padding:26px 22px 60px;max-width:1500px;margin:0 auto}
   font-weight:800;font-size:12.5px;color:var(--text-soft)}
 
 /* Сводка ставок в форме — отдельные пилюли */
-.rate-summary{display:flex;gap:9px;flex-wrap:wrap;font-size:13px;color:var(--text-soft)}
-.rate-summary span{display:inline-flex;align-items:center;gap:5px;background:var(--surface-2);
+.rate-summary{display:flex;gap:9px;flex-wrap:nowrap;font-size:13px;color:var(--text-soft);overflow-x:auto}
+.rate-summary span{flex:none;white-space:nowrap;display:inline-flex;align-items:center;gap:5px;background:var(--surface-2);
   border:1px solid var(--line);border-radius:20px;padding:6px 13px;white-space:nowrap}
 .rate-summary b{color:var(--text)}
 
@@ -580,28 +585,52 @@ main#view{padding:26px 22px 60px;max-width:1500px;margin:0 auto}
 .bi-status{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:700;white-space:nowrap}
 
 /* ── Сводка для руководства ───────────────────────────── */
-.summary-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
-.summary-table{width:100%;border-collapse:collapse;font-size:13.5px}
-.summary-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;
-  color:var(--text-mute);padding:10px;border-bottom:2px solid var(--line-strong);white-space:nowrap;
+/* Сводка расширяется шире контейнера (до края экрана), без полос прокрутки */
+.summary-wrap{position:relative;left:50%;transform:translateX(-50%);
+  width:min(1760px,calc(100vw - 40px));overflow:hidden;
+  border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.summary-table{width:100%;border-collapse:separate;border-spacing:0;font-size:11.5px;table-layout:fixed}
+/* Выравнивание по центру везде, кроме колонки «Зона» */
+.summary-table th,.summary-table td{text-align:center;vertical-align:middle;
+  border-right:1px solid var(--line);font-variant-numeric:tabular-nums}
+.summary-table th:last-child,.summary-table td:last-child{border-right:0}
+.summary-table th{font-size:10.5px;text-transform:none;font-weight:600;
+  color:var(--text-soft);padding:7px 5px;border-bottom:2px solid var(--line-strong);
+  white-space:normal;line-height:1.2;vertical-align:bottom;
   position:sticky;top:0;background:var(--surface);z-index:1}
-.summary-table td{padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
-.summary-table tbody tr{cursor:pointer}
+.summary-table td{padding:6px 5px;border-bottom:1px solid var(--line);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;font-weight:400}
+.summary-table tbody tr{cursor:pointer;height:40px}
 .summary-table tbody tr:hover{background:var(--surface-2)}
-.summary-table .sm-num{color:var(--text-mute);text-align:center}
-.summary-table .sm-c{text-align:center}
-.summary-table .sm-r{text-align:right;font-weight:700}
+.summary-table th.sm-zone,.summary-table td.sm-zone{text-align:left}
+.summary-table td.sm-zone{white-space:normal}
+.summary-table td.sm-zone .zn{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+  overflow:hidden;line-height:1.25}
+/* Матрица по месяцам */
+.summary-table th.sm-mon{font-size:10px}
+.summary-table th.sm-mon .sm-yr{color:var(--text-mute);font-weight:600}
+.summary-table td.sm-mon{font-size:10.5px}
+/* Бледно-зелёная заливка суммы для подтверждённых броней */
+.summary-table td.sm-paid{background:rgba(16,185,129,.14)}
+.summary-table .sm-dash{color:var(--line-strong)}
+/* Шарик статуса */
+.summary-table .sm-dot{display:inline-block;width:11px;height:11px;border-radius:50%}
+/* Жирный шрифт — только в строке итогов */
+.summary-table tfoot .sm-total td{border-top:2px solid var(--line-strong);border-bottom:0;
+  background:var(--surface-2);font-size:11px;font-weight:700;padding-top:8px;padding-bottom:8px}
+.summary-table tfoot .sm-total{cursor:default}
 @media print{
   @page{ size:landscape; margin:10mm; }
   .topbar{display:none !important}
   .no-print{display:none !important}
   #app,#view{padding:0 !important;margin:0 !important}
   .page-head{margin:0 0 8px}
-  .summary-wrap{border:none;overflow:visible}
-  .summary-table{font-size:11px}
-  .summary-table th{position:static;padding:6px}
-  .summary-table td{padding:5px 6px}
+  .summary-wrap{border:none;overflow:visible;left:auto;transform:none;width:auto}
+  .summary-table{font-size:10px}
+  .summary-table th{position:static;padding:5px 4px}
+  .summary-table td{padding:4px}
   .summary-table th,.summary-table td{white-space:normal}
+  .summary-table td.sm-mon{font-size:9.5px}
 }
 
 /* ── Карточка арендатора: две колонки + чек-лист ───────── */
