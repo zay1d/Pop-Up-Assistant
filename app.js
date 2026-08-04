@@ -2665,30 +2665,28 @@ function renderSummary(v) {
   head.appendChild(printBtn);
   v.appendChild(head);
 
-  const floorOf = p => { const z = zoneById(p.zoneId); return z ? z.floor : 999; };
-  const list = [...State.placements].sort((a, b) =>
-    (floorOf(a) - floorOf(b)) ||
-    byCode(zoneById(a.zoneId) || {}, zoneById(b.zoneId) || {}) ||
-    (a.start || '').localeCompare(b.start || ''));
-
-  if (!list.length) {
+  const all = State.placements;
+  if (!all.length) {
     v.appendChild(el('div', 'empty', `<div class="em-icon">📋</div><h3>Пока пусто</h3><p>Добавьте размещения — они появятся в сводке.</p>`));
     return;
   }
 
-  // Диапазон месяцев по всем размещениям (от самого раннего начала до самого позднего конца)
+  const floorOf = p => { const z = zoneById(p.zoneId); return z ? z.floor : 999; };
+  const list = [...all].sort((a, b) =>
+    (floorOf(a) - floorOf(b)) ||
+    byCode(zoneById(a.zoneId) || {}, zoneById(b.zoneId) || {}) ||
+    (a.start || '').localeCompare(b.start || ''));
+
+  // Все месяцы года(ов), которых касаются брони — с января минимального до декабря максимального.
   const MN = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
   const pad2 = n => String(n).padStart(2, '0');
   const allDates = [];
   list.forEach(p => { if (p.start) allDates.push(p.start); if (p.end) allDates.push(p.end); });
-  const minD = allDates.reduce((a, b) => a < b ? a : b);
-  const maxD = allDates.reduce((a, b) => a > b ? a : b);
-  // Все месяцы года(ов) — с января минимального до декабря максимального года, включая пустые.
+  const minY = +allDates.reduce((a, b) => a < b ? a : b).slice(0, 4);
+  const maxY = +allDates.reduce((a, b) => a > b ? a : b).slice(0, 4);
   const months = [];
-  let yy = +minD.slice(0, 4);
-  const endY = +maxD.slice(0, 4);
-  for (; yy <= endY; yy++) {
-    for (let mo = 1; mo <= 12; mo++) months.push({ y: yy, m: mo, label: MN[mo - 1], year: yy });
+  for (let y = minY; y <= maxY; y++) {
+    for (let mo = 1; mo <= 12; mo++) months.push({ y, m: mo, label: MN[mo - 1], year: y });
   }
 
   // Сумма аренды размещения, приходящаяся на конкретный месяц (пропорционально дням)
@@ -2701,6 +2699,14 @@ function renderSummary(v) {
     if (e < s) return 0;
     return Math.round(perDay * diffDaysIncl(s, e));
   };
+
+  // Ширины левых (закреплённых) колонок и месяца. Левая часть не прокручивается —
+  // каждая её ячейка получает position:sticky (класс .sm-fix) со своим смещением слева.
+  const LW = [34, 126, 104, 76, 76, 58, 78, 72, 80, 44];   // Этаж…Скидка
+  const MONW = 64, STATUSW = 56;
+  const LEFT = LW.reduce((a, w, i) => (a.push(i ? a[i - 1] + LW[i - 1] : 0), a), []);
+  const LAST = LW.length - 1;
+  const fx = (i, cls) => `class="sm-fix${i === LAST ? ' sm-fix-last' : ''}${cls ? ' ' + cls : ''}" style="left:${LEFT[i]}px"`;
 
   const monthSums = months.map(() => 0);
   let sumBase = 0, sumAgreed = 0, sumMonthly = 0;
@@ -2718,16 +2724,16 @@ function renderSummary(v) {
     if (m.monthlyManual) sumMonthly += m.monthly;
     const dotColor = p.status === 'busy' ? '#10b981' : '#f59e0b';
     return `<tr data-pid="${p.id}">
-      <td>${z ? z.floor : '—'}</td>
-      <td class="sm-zone"><span class="zn">${esc(z ? ((z.code ? z.code + ' · ' : '') + z.name) : '—')}</span></td>
-      <td>${esc(p.brand || '—')}</td>
-      <td>${fmtDate(p.start)}</td>
-      <td>${fmtDate(p.end)}</td>
-      <td>${m.days} дн.</td>
-      <td>${m.monthlyManual ? fmtNum(m.monthly) : '<span class="sm-dash">—</span>'}</td>
-      <td>${fmtNum(m.totalBase)}</td>
-      <td>${fmtNum(m.totalAgreed)}</td>
-      <td>${m.discount ? m.discount + '%' : '—'}</td>
+      <td ${fx(0)}>${z ? z.floor : '—'}</td>
+      <td ${fx(1, 'sm-zone')}><span class="zn">${esc(z ? ((z.code ? z.code + ' · ' : '') + z.name) : '—')}</span></td>
+      <td ${fx(2)}>${esc(p.brand || '—')}</td>
+      <td ${fx(3)}>${fmtDate(p.start)}</td>
+      <td ${fx(4)}>${fmtDate(p.end)}</td>
+      <td ${fx(5)}>${m.days} дн.</td>
+      <td ${fx(6)}>${m.monthlyManual ? fmtNum(m.monthly) : '<span class="sm-dash">—</span>'}</td>
+      <td ${fx(7)}>${fmtNum(m.totalBase)}</td>
+      <td ${fx(8)}>${fmtNum(m.totalAgreed)}</td>
+      <td ${fx(9)}>${m.discount ? m.discount + '%' : '—'}</td>
       ${cells}
       <td><span class="sm-dot" style="background:${dotColor}"></span></td>
     </tr>`;
@@ -2736,28 +2742,31 @@ function renderSummary(v) {
   const monthHead = months.map(mo => `<th class="sm-mon">${mo.label}<br><span class="sm-yr">${mo.year}</span></th>`).join('');
   const footCells = months.map((_, i) => `<td class="sm-mon">${monthSums[i] ? fmtNum(monthSums[i]) : '·'}</td>`).join('');
   const foot = `<tr class="sm-total">
-      <td colspan="6">Итого, $</td>
-      <td>${sumMonthly ? fmtNum(sumMonthly) : ''}</td>
-      <td>${fmtNum(sumBase)}</td>
-      <td>${fmtNum(sumAgreed)}</td>
-      <td></td>
+      <td colspan="6" ${fx(0)}>Итого, $</td>
+      <td ${fx(6)}>${sumMonthly ? fmtNum(sumMonthly) : ''}</td>
+      <td ${fx(7)}>${fmtNum(sumBase)}</td>
+      <td ${fx(8)}>${fmtNum(sumAgreed)}</td>
+      <td ${fx(9)}></td>
       ${footCells}
       <td></td>
     </tr>`;
 
   const cols = `<colgroup>
-      <col style="width:34px"><col style="width:126px"><col style="width:82px">
-      <col style="width:76px"><col style="width:76px"><col style="width:44px">
-      <col style="width:78px"><col style="width:72px"><col style="width:80px"><col style="width:44px">
-      ${months.map(() => '<col>').join('')}
-      <col style="width:56px">
+      ${LW.map(w => `<col style="width:${w}px">`).join('')}
+      ${months.map(() => `<col style="width:${MONW}px">`).join('')}
+      <col style="width:${STATUSW}px">
     </colgroup>`;
+  // Ширина таблицы = сумма колонок. Если шире блока — появляется горизонтальная прокрутка,
+  // если уже — CSS-правило min-width:100% растягивает её на всю ширину.
+  const FIXED_W = LW.reduce((a, w) => a + w, 0) + STATUSW;
+  const tableW = FIXED_W + months.length * MONW;
+
   const wrap = el('div', 'summary-wrap');
-  wrap.innerHTML = `<table class="summary-table matrix">
+  wrap.innerHTML = `<table class="summary-table matrix" style="width:${tableW}px">
     ${cols}
     <thead><tr>
-      <th>Этаж</th><th class="sm-zone">Зона</th><th>Арендатор</th><th>Начало</th><th>Окончание</th>
-      <th>Длитель­ность</th><th>Стоимость в месяц</th><th>Начальная стоимость</th><th>Согласованная стоимость</th><th>Скидка</th>${monthHead}<th>Статус</th>
+      <th ${fx(0)}>Этаж</th><th ${fx(1, 'sm-zone')}>Зона</th><th ${fx(2)}>Арендатор</th><th ${fx(3)}>Начало</th><th ${fx(4)}>Окончание</th>
+      <th ${fx(5)}>Длитель­ность</th><th ${fx(6)}>Стоимость в месяц</th><th ${fx(7)}>Начальная стоимость</th><th ${fx(8)}>Согласованная стоимость</th><th ${fx(9)}>Скидка</th>${monthHead}<th>Статус</th>
     </tr></thead>
     <tbody>${rows}</tbody>
     <tfoot>${foot}</tfoot></table>`;

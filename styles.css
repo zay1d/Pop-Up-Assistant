@@ -585,11 +585,15 @@ main#view{padding:26px 22px 60px;max-width:1500px;margin:0 auto}
 .bi-status{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:700;white-space:nowrap}
 
 /* ── Сводка для руководства ───────────────────────────── */
-/* Сводка расширяется шире контейнера (до края экрана), без полос прокрутки */
+/* Сводка расширяется шире контейнера (до края экрана); месяцы прокручиваются вбок */
 .summary-wrap{position:relative;left:50%;transform:translateX(-50%);
-  width:min(1760px,calc(100vw - 40px));overflow:hidden;
+  width:min(1760px,calc(100vw - 40px));overflow-x:auto;overflow-y:hidden;
   border:1px solid var(--line);border-radius:12px;background:var(--surface)}
-.summary-table{width:100%;border-collapse:separate;border-spacing:0;font-size:11.5px;table-layout:fixed}
+.summary-wrap::-webkit-scrollbar{height:11px}
+.summary-wrap::-webkit-scrollbar-track{background:var(--surface-2);border-radius:0 0 12px 12px}
+.summary-wrap::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:6px}
+.summary-wrap::-webkit-scrollbar-thumb:hover{background:var(--text-mute)}
+.summary-table{width:auto;min-width:100%;border-collapse:separate;border-spacing:0;font-size:11.5px;table-layout:fixed}
 /* Выравнивание по центру везде, кроме колонки «Зона» */
 .summary-table th,.summary-table td{text-align:center;vertical-align:middle;
   border-right:1px solid var(--line);font-variant-numeric:tabular-nums}
@@ -603,6 +607,14 @@ main#view{padding:26px 22px 60px;max-width:1500px;margin:0 auto}
 .summary-table tbody tr{cursor:pointer;height:40px}
 .summary-table tbody tr:hover{background:var(--surface-2)}
 .summary-table th.sm-zone,.summary-table td.sm-zone{text-align:left}
+/* Левая часть таблицы закреплена: прокручиваются только колонки месяцев.
+   Смещение слева (left) задаётся инлайном из app.js, чтобы совпадать с шириной колонок. */
+.summary-table .sm-fix{position:sticky;z-index:2;background:var(--surface)}
+.summary-table thead .sm-fix{z-index:4;background:var(--surface)}
+.summary-table tfoot .sm-fix{z-index:3;background:var(--surface-2)}
+.summary-table tbody tr:hover .sm-fix{background:var(--surface-2)}
+/* граница между закреплённой частью и месяцами */
+.summary-table .sm-fix-last{border-right:2px solid var(--line-strong)}
 .summary-table td.sm-zone{white-space:normal}
 .summary-table td.sm-zone .zn{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
   overflow:hidden;line-height:1.25}
@@ -619,18 +631,36 @@ main#view{padding:26px 22px 60px;max-width:1500px;margin:0 auto}
 .summary-table tfoot .sm-total td{border-top:2px solid var(--line-strong);border-bottom:0;
   background:var(--surface-2);font-size:11px;font-weight:700;padding-top:8px;padding-bottom:8px}
 .summary-table tfoot .sm-total{cursor:default}
+/* ── Печать: сводка на лист A3 в альбомной ориентации ──────────
+   Ширина таблицы и колонок задана инлайном из app.js (для прокрутки на экране),
+   поэтому при печати их нужно снимать через !important и отдать ширину браузеру. */
 @media print{
-  @page{ size:landscape; margin:10mm; }
+  @page{ size:A3 landscape; margin:8mm; }
   .topbar{display:none !important}
   .no-print{display:none !important}
-  #app,#view{padding:0 !important;margin:0 !important}
-  .page-head{margin:0 0 8px}
-  .summary-wrap{border:none;overflow:visible;left:auto;transform:none;width:auto}
-  .summary-table{font-size:10px}
-  .summary-table th{position:static;padding:5px 4px}
-  .summary-table td{padding:4px}
-  .summary-table th,.summary-table td{white-space:normal}
-  .summary-table td.sm-mon{font-size:9.5px}
+  #app,#view{padding:0 !important;margin:0 !important;max-width:none !important}
+  .page-head{margin:0 0 6px}
+  /* блок больше не прокручивается и не растягивается за край экрана */
+  .summary-wrap{border:none;overflow:visible !important;left:auto !important;
+    transform:none !important;width:100% !important}
+  /* снимаем инлайновую ширину таблицы и фиксированные ширины колонок */
+  .summary-table{width:100% !important;min-width:0 !important;table-layout:auto !important;font-size:7pt}
+  .summary-table col{width:auto !important}
+  /* закреплённые колонки при печати не нужны — иначе они наезжают на месяцы */
+  .summary-table .sm-fix{position:static !important;left:auto !important}
+  .summary-table th{position:static !important;padding:3px 2px;font-size:6.5pt}
+  .summary-table td{padding:3px 2px}
+  /* строки по высоте содержимого — иначе экранные 40px уводят таблицу на второй лист */
+  .summary-table tbody tr{height:auto !important}
+  .summary-table th,.summary-table td{white-space:normal;overflow:visible}
+  .summary-table td.sm-mon,.summary-table th.sm-mon{font-size:6.5pt}
+  .summary-table tfoot .sm-total td{font-size:7pt;padding:4px 2px}
+  .summary-table td.sm-zone .zn{-webkit-line-clamp:3}
+  /* строки не должны разрываться между страницами */
+  .summary-table tr{page-break-inside:avoid}
+  .summary-table thead{display:table-header-group}
+  /* фон заливки подтверждённых месяцев должен печататься */
+  .summary-table td.sm-paid{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 
 /* ── Карточка арендатора: две колонки + чек-лист ───────── */
