@@ -150,9 +150,9 @@ function placementMoney(p) {
   const discount = base > 0 ? Math.round((base - agreed) / base * 100) : 0;
   const perDay = days ? totalAgreed / days : 0;    // стоимость аренды в день = согласованная ÷ дни
   const dayRate = days ? base / days : 0;
-  // Стоимость в месяц вносится вручную; если не задана — расчёт (в день × 30).
+  // Стоимость в месяц вносится только вручную менеджером; расчётной подстановки нет.
   const monthlyManual = (p.monthlyCost != null && p.monthlyCost !== '');
-  const monthly = monthlyManual ? (Number(p.monthlyCost) || 0) : Math.round(perDay * 30);
+  const monthly = monthlyManual ? (Number(p.monthlyCost) || 0) : null;
   return { dayRate, days, discount, totalBase, totalAgreed, manual: true, area: Number(p.area) || 0, perDay, baseCost: base, agreedCost: agreed, monthly, monthlyManual };
 }
 
@@ -1929,7 +1929,7 @@ async function openPlacementCard(pid) {
           <tr><td class="k">Размеры конструкции</td><td>${esc(p.dimensions)||'—'}</td></tr>
           <tr><td class="k">Площадь</td><td>${m.area?fmtNum(m.area)+' м²':'—'}</td></tr>
           <tr><td class="k">Дней</td><td>${m.days}</td></tr>
-          <tr><td class="k">Стоимость в месяц</td><td>${fmtUsd(m.monthly)}${m.monthlyManual ? '' : ' <span class="muted">(расчёт: в день × 30)</span>'}</td></tr>
+          <tr><td class="k">Стоимость в месяц</td><td>${m.monthlyManual ? fmtUsd(m.monthly) : '—'}</td></tr>
           <tr><td class="k">Начальная стоимость</td><td>${fmtUsd(m.totalBase)}</td></tr>
           <tr><td class="k">Скидка</td><td>${m.discount ? m.discount + ' %' : '—'}</td></tr>
           <tr><td class="k">Согласованная стоимость</td><td><b style="color:var(--green)">${fmtUsd(m.totalAgreed)}</b></td></tr>
@@ -2389,10 +2389,9 @@ async function openPlacementForm(pid, preset) {
     const disc = base > 0 ? Math.round((base - agreed) / base * 100) : 0;
     const perDay = days ? Math.round(agreed / days) : 0;
     const monthlyIn = $('#f-monthly').value;
-    const monthly = monthlyIn !== '' ? Math.max(0, Number(monthlyIn) || 0) : (days ? Math.round(agreed / days * 30) : 0);
     $('#f-totals').innerHTML =
       `<span>Дней: <b>${days}</b></span>` +
-      `<span>В месяц: <b>${fmtUsd(monthly)}</b>${monthlyIn !== '' ? '' : ' (расчёт)'}</span>` +
+      `<span>В месяц: <b>${monthlyIn !== '' ? fmtUsd(Math.max(0, Number(monthlyIn) || 0)) : '—'}</b></span>` +
       `<span>Начальная: <b>${fmtUsd(base)}</b></span>` +
       `<span>Согласованная: <b style="color:var(--green)">${fmtUsd(agreed)}</b></span>` +
       `<span>Скидка: <b>${disc ? disc + '%' : '—'}</b></span>` +
@@ -2403,11 +2402,14 @@ async function openPlacementForm(pid, preset) {
   });
   recalcRates();
 
-  // Мгновенная проверка пересечения с учётом дней на монтаж/демонтаж
+  // Мгновенная проверка пересечения с учётом дней на монтаж/демонтаж.
+  // «Отказано»/«Завершено» зону не занимают — для них пересечение не блокирует сохранение.
   const checkClash = () => {
     const zoneId = $('#f-zone').value, s = $('#f-start').value, e = $('#f-end').value;
     const warn = $('#f-clash');
     const clear = () => { warn.hidden = true; warn.textContent = ''; $('#f-start').classList.remove('field-bad'); $('#f-end').classList.remove('field-bad'); $('#saveP').disabled = false; };
+    const stVal = $('#f-status').value;
+    if (stVal === 'rejected' || stVal === 'done') return clear();
     if (!zoneId || (!s && !e)) return clear();
     const a = s || e, b = e || s;
     const rs = a < b ? a : b, re = a < b ? b : a;
@@ -2426,7 +2428,7 @@ async function openPlacementForm(pid, preset) {
     $('#f-end').classList.toggle('field-bad', !!e);
     $('#saveP').disabled = true;
   };
-  ['#f-zone', '#f-start', '#f-end', '#f-setup', '#f-teardown'].forEach(sel => {
+  ['#f-zone', '#f-start', '#f-end', '#f-setup', '#f-teardown', '#f-status'].forEach(sel => {
     $(sel).addEventListener('change', checkClash);
     $(sel).addEventListener('input', checkClash);
   });
@@ -2473,9 +2475,12 @@ async function openPlacementForm(pid, preset) {
     const setupDays = Math.max(0, Number($('#f-setup').value) || 0);
     const teardownDays = Math.max(0, Number($('#f-teardown').value) || 0);
 
-    // Запрет наложения с учётом монтажа/демонтажа (Отказано/Завершено не мешают)
+    // Запрет наложения с учётом монтажа/демонтажа (Отказано/Завершено не мешают).
+    // Сама бронь со статусом «Отказано»/«Завершено» зону не занимает — сохраняем без проверки.
+    const newStatus = $('#f-status').value;
     const newStart = addDays(start, -setupDays), newEnd = addDays(end, teardownDays);
-    const clash = State.placements.find(x => x.zoneId===zoneId && x.id!==pid
+    const clash = (newStatus === 'rejected' || newStatus === 'done') ? null
+      : State.placements.find(x => x.zoneId===zoneId && x.id!==pid
       && x.status!=='rejected' && x.status!=='done'
       && (() => { const sp = occupiedSpan(x); return newStart <= sp.end && newEnd >= sp.start; })());
     if (clash) {
@@ -2660,14 +2665,54 @@ function renderSummary(v) {
   const head = el('div', 'page-head');
   head.appendChild(el('h2', null, 'Сводка для руководства'));
   head.appendChild(el('div', 'spacer'));
+
+  // Фильтр по статусам (слева от «Печать») — чекбоксы, можно выбрать несколько.
+  // Пустой выбор = все статусы. Итоги считаются только по показанным строкам.
+  const selSet = new Set(Array.isArray(State.sumFilter) ? State.sumFilter : []);
+  const filterActive = selSet.size > 0;
+  const fLabel = filterActive
+    ? CONTRACT_STATUSES.filter(s => selSet.has(s.key)).map(s => s.label).join(', ')
+    : 'Все статусы';
+  const fwrap = el('div', 'sum-fwrap no-print');
+  fwrap.innerHTML = `
+    <button class="btn btn-sm" id="sumFltBtn">▾ ${esc(fLabel)}</button>
+    <div class="sum-fpanel" id="sumFltPanel" ${State.sumFilterOpen ? '' : 'hidden'}>
+      <label><input type="checkbox" data-all ${filterActive ? '' : 'checked'}> Все статусы</label>
+      ${CONTRACT_STATUSES.map(s => `<label><input type="checkbox" value="${s.key}" ${selSet.has(s.key) ? 'checked' : ''}> ${s.label}</label>`).join('')}
+    </div>`;
+  head.appendChild(fwrap);
+  fwrap.querySelector('#sumFltBtn').onclick = () => {
+    const p = fwrap.querySelector('#sumFltPanel');
+    p.hidden = !p.hidden;
+    State.sumFilterOpen = !p.hidden;
+  };
+  fwrap.querySelectorAll('#sumFltPanel input').forEach(cb => cb.onchange = () => {
+    if (cb.hasAttribute('data-all')) State.sumFilter = [];
+    else State.sumFilter = [...fwrap.querySelectorAll('#sumFltPanel input[value]:checked')].map(x => x.value);
+    State.sumFilterOpen = true;   // панель остаётся открытой для выбора нескольких
+    go('summary');
+  });
+  // клик вне панели закрывает её
+  if (State.sumFilterOpen) setTimeout(() => {
+    const h = (e) => {
+      if (!fwrap.contains(e.target)) {
+        State.sumFilterOpen = false;
+        document.removeEventListener('mousedown', h);
+        const p = document.getElementById('sumFltPanel');
+        if (p) p.hidden = true;
+      }
+    };
+    document.addEventListener('mousedown', h);
+  }, 0);
+
   const printBtn = el('button', 'btn btn-sm no-print', '🖨 Печать');
   printBtn.onclick = () => window.print();
   head.appendChild(printBtn);
   v.appendChild(head);
 
-  const all = State.placements;
+  const all = filterActive ? State.placements.filter(p => selSet.has(p.status)) : State.placements;
   if (!all.length) {
-    v.appendChild(el('div', 'empty', `<div class="em-icon">📋</div><h3>Пока пусто</h3><p>Добавьте размещения — они появятся в сводке.</p>`));
+    v.appendChild(el('div', 'empty', `<div class="em-icon">📋</div><h3>Пока пусто</h3><p>${filterActive ? 'Нет размещений с выбранными статусами.' : 'Добавьте размещения — они появятся в сводке.'}</p>`));
     return;
   }
 
@@ -2702,8 +2747,9 @@ function renderSummary(v) {
 
   // Ширины левых (закреплённых) колонок и месяца. Левая часть не прокручивается —
   // каждая её ячейка получает position:sticky (класс .sm-fix) со своим смещением слева.
-  const LW = [34, 126, 104, 76, 76, 58, 78, 72, 80, 44];   // Этаж…Скидка
-  const MONW = 64, STATUSW = 56;
+  // Статус — в закреплённой части, после «Скидки».
+  const LW = [34, 126, 104, 76, 76, 58, 78, 72, 80, 44, 48];   // Этаж…Скидка, Статус
+  const MONW = 64;
   const LEFT = LW.reduce((a, w, i) => (a.push(i ? a[i - 1] + LW[i - 1] : 0), a), []);
   const LAST = LW.length - 1;
   const fx = (i, cls) => `class="sm-fix${i === LAST ? ' sm-fix-last' : ''}${cls ? ' ' + cls : ''}" style="left:${LEFT[i]}px"`;
@@ -2714,15 +2760,24 @@ function renderSummary(v) {
     const z = zoneById(p.zoneId);
     const m = placementMoney(p);
     const confirmed = p.status === 'busy';
+    // «Отказано» в общем списке показывается, но в итоги не входит.
+    // При явном фильтре по статусу считается всё показанное.
+    const counted = filterActive || p.status !== 'rejected';
     const cells = months.map((mo, i) => {
       const a = monthAmount(p, m.perDay, mo);
-      monthSums[i] += a;
+      if (counted) monthSums[i] += a;
       const cls = 'sm-mon' + (a && confirmed ? ' sm-paid' : '');
       return `<td class="${cls}">${a ? fmtNum(a) : '<span class="sm-dash">·</span>'}</td>`;
     }).join('');
-    sumBase += m.totalBase; sumAgreed += m.totalAgreed;
-    if (m.monthlyManual) sumMonthly += m.monthly;
-    const dotColor = p.status === 'busy' ? '#10b981' : '#f59e0b';
+    if (counted) {
+      sumBase += m.totalBase; sumAgreed += m.totalAgreed;
+      if (m.monthlyManual) sumMonthly += m.monthly;
+    }
+    // Статус: Завершено — зелёная галочка; Подтверждено — зелёный кружок;
+    // Отказано — красный; остальное (Переговоры) — оранжевый.
+    const stMark = p.status === 'done'
+      ? `<span class="sm-check" title="${statusInfo(p.status).label}">✔</span>`
+      : `<span class="sm-dot${p.status === 'busy' ? ' sm-live' : ''}" style="background:${p.status === 'busy' ? '#10b981' : p.status === 'rejected' ? '#ef4444' : '#f59e0b'}" title="${statusInfo(p.status).label}"></span>`;
     return `<tr data-pid="${p.id}">
       <td ${fx(0)}>${z ? z.floor : '—'}</td>
       <td ${fx(1, 'sm-zone')}><span class="zn">${esc(z ? ((z.code ? z.code + ' · ' : '') + z.name) : '—')}</span></td>
@@ -2734,8 +2789,8 @@ function renderSummary(v) {
       <td ${fx(7)}>${fmtNum(m.totalBase)}</td>
       <td ${fx(8)}>${fmtNum(m.totalAgreed)}</td>
       <td ${fx(9)}>${m.discount ? m.discount + '%' : '—'}</td>
+      <td ${fx(10)}>${stMark}</td>
       ${cells}
-      <td><span class="sm-dot" style="background:${dotColor}"></span></td>
     </tr>`;
   }).join('');
 
@@ -2747,18 +2802,17 @@ function renderSummary(v) {
       <td ${fx(7)}>${fmtNum(sumBase)}</td>
       <td ${fx(8)}>${fmtNum(sumAgreed)}</td>
       <td ${fx(9)}></td>
+      <td ${fx(10)}></td>
       ${footCells}
-      <td></td>
     </tr>`;
 
   const cols = `<colgroup>
       ${LW.map(w => `<col style="width:${w}px">`).join('')}
       ${months.map(() => `<col style="width:${MONW}px">`).join('')}
-      <col style="width:${STATUSW}px">
     </colgroup>`;
   // Ширина таблицы = сумма колонок. Если шире блока — появляется горизонтальная прокрутка,
   // если уже — CSS-правило min-width:100% растягивает её на всю ширину.
-  const FIXED_W = LW.reduce((a, w) => a + w, 0) + STATUSW;
+  const FIXED_W = LW.reduce((a, w) => a + w, 0);
   const tableW = FIXED_W + months.length * MONW;
 
   const wrap = el('div', 'summary-wrap');
@@ -2766,7 +2820,7 @@ function renderSummary(v) {
     ${cols}
     <thead><tr>
       <th ${fx(0)}>Этаж</th><th ${fx(1, 'sm-zone')}>Зона</th><th ${fx(2)}>Арендатор</th><th ${fx(3)}>Начало</th><th ${fx(4)}>Окончание</th>
-      <th ${fx(5)}>Длитель­ность</th><th ${fx(6)}>Стоимость в месяц</th><th ${fx(7)}>Начальная стоимость</th><th ${fx(8)}>Согласованная стоимость</th><th ${fx(9)}>Скидка</th>${monthHead}<th>Статус</th>
+      <th ${fx(5)}>Длитель­ность</th><th ${fx(6)}>Стоимость в месяц</th><th ${fx(7)}>Начальная стоимость</th><th ${fx(8)}>Согласованная стоимость</th><th ${fx(9)}>Скидка</th><th ${fx(10)}>Статус</th>${monthHead}
     </tr></thead>
     <tbody>${rows}</tbody>
     <tfoot>${foot}</tfoot></table>`;
